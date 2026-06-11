@@ -4,6 +4,6 @@
     "go": "1.26.2"
   },
   "deploy": {
-    "startCommand": "./go-trader --config scheduler/config.json"
+    "startCommand": "./go-trader --config scheduler/config.railway.json"
   }
 }

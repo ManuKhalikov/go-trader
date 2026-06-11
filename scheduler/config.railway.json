@@ -1,0 +1,60 @@
+{
+  "config_version": 15,
+  "interval_seconds": 3600,
+  "db_file": "scheduler/state.db",
+  "log_dir": "logs",
+  "auto_update": "daily",
+  "status_port": 8099,
+  "risk_free_rate": 0.04,
+  "default_stop_loss_atr_mult": 2.0,
+  "portfolio_risk": {
+    "max_drawdown_pct": 15,
+    "max_notional_usd": 0,
+    "warn_threshold_pct": 60
+  },
+  "regime": {
+    "enabled": true,
+    "period": 14,
+    "adx_threshold": 20
+  },
+  "telegram": {
+    "enabled": true,
+    "bot_token": ""
+  },
+  "platforms": {
+    "hyperliquid": {
+      "risk": {
+        "max_drawdown_pct": 15
+      }
+    }
+  },
+  "strategies": [
+    {
+      "id": "hl-roundtable",
+      "type": "manual",
+      "platform": "hyperliquid",
+      "symbol": "BTC",
+      "timeframe": "4h",
+      "capital": 1000,
+      "max_drawdown_pct": 10,
+      "leverage": 1,
+      "margin_mode": "isolated",
+      "direction": "both",
+      "stop_loss_atr_mult": 2.0,
+      "trailing_stop_atr_mult": 1.5,
+      "close_strategies": [
+        {
+          "name": "tiered_tp_atr_live",
+          "params": {
+            "tiers": [
+              { "atr_mult": 1.0, "fraction": 0.40 },
+              { "atr_mult": 2.0, "fraction": 0.35 },
+              { "atr_mult": 3.0, "fraction": 0.25 }
+            ]
+          }
+        }
+      ],
+      "allowed_regimes": ["trending_up", "trending_down"]
+    }
+  ]
+}

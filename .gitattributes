@@ -1,2 +1,3 @@
 railway.toml text eol=lf
 railpack.json text eol=lf
+scheduler/config.railway.json text eol=lf
