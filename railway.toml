@@ -2,7 +2,7 @@
 buildCommand = "cd scheduler && go build -o ../go-trader . && cd .."
 
 [deploy]
-startCommand = "sh -c './go-trader --config scheduler/config.railway.json --status-port ${PORT:-8099}'"
+startCommand = "sh -c './go-trader --config scheduler/config.railway.json --status-port ${PORT:-8080}'"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 5
 
