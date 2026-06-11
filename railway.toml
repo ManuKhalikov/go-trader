@@ -1,10 +1,20 @@
-[build]
-buildCommand = "cd scheduler && go build -o ../go-trader . && cd .."
-
-[deploy]
-startCommand = "./go-trader --config scheduler/config.json"
-restartPolicyType = "on_failure"
-restartPolicyMaxRetries = 5
-
-[[services]]
-region = "europe-west4-drams3a"
+[build]
+
+buildCommand = "cd scheduler && go build -o ../go-trader . && cd .."
+
+
+
+[deploy]
+
+startCommand = "./go-trader --config scheduler/config.json"
+
+restartPolicyType = "on_failure"
+
+restartPolicyMaxRetries = 5
+
+
+
+[[services]]
+
+region = "europe-west4-drams3a"
+
