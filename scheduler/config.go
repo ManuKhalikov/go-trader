@@ -840,6 +840,16 @@ func loadConfig(path string, skipLiveCredentialChecks bool) (*Config, error) {
 	// Telegram owner chat ID from env var takes priority over config file.
 	if telegramOwner := os.Getenv("TELEGRAM_OWNER_CHAT_ID"); telegramOwner != "" {
 		cfg.Telegram.OwnerChatID = telegramOwner
+	} else if telegramOwner := os.Getenv("TELEGRAM_OWNER_ID"); telegramOwner != "" {
+		cfg.Telegram.OwnerChatID = telegramOwner
+	}
+
+	// TELEGRAM_CHAT_ID sets the perps trade alert channel (Roundtable convention).
+	if chatID := os.Getenv("TELEGRAM_CHAT_ID"); chatID != "" {
+		if cfg.Telegram.TradeAlertChannels == nil {
+			cfg.Telegram.TradeAlertChannels = make(map[string]string)
+		}
+		cfg.Telegram.TradeAlertChannels["perps"] = chatID
 	}
 
 	// Optional auth token for the /status HTTP endpoint.

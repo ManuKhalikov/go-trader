@@ -175,7 +175,7 @@ func bindWithFallback(port, maxAttempts int) (net.Listener, int, error) {
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		tryPort := port + attempt
-		addr := fmt.Sprintf("localhost:%d", tryPort)
+		addr := fmt.Sprintf("%s:%d", statusBindHost(), tryPort)
 		listener, err := net.Listen("tcp", addr)
 		if err == nil {
 			return listener, tryPort, nil
@@ -197,6 +197,8 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/api/strategies/overview", ss.handleAPIStrategiesOverview)
 	mux.HandleFunc("/api/regime", ss.handleAPIRegime)
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
+	mux.HandleFunc("/manual-open", ss.handleManualOpenHTTP)
+	mux.HandleFunc("/manual-close", ss.handleManualCloseHTTP)
 
 	listener, boundPort, err := bindWithFallback(port, statusPortMaxAttempts)
 	if err != nil {

@@ -28,6 +28,7 @@ func runManualOpen(args []string) int {
 	size := fs.Float64("size", 0, "Size in base units (coin qty)")
 	notional := fs.Float64("notional", 0, "Size as USD notional (size = notional / price)")
 	margin := fs.Float64("margin", 0, "Size as USD margin (size = margin * leverage / price)")
+	symbolOverride := fs.String("symbol", "", "Override strategy symbol for this open (e.g. BTC)")
 	atr := fs.Float64("atr", 0, "ATR value to stamp on the position (required for ATR-based stops when not auto-fetched)")
 	slATRMult := fs.Float64("stop-loss-atr-mult", 0, "Override stop_loss_atr_mult for this position (0 = use strategy default)")
 	slPct := fs.Float64("stop-loss-pct", 0, "Override stop_loss_pct for this position (0 = use strategy default)")
@@ -62,6 +63,10 @@ func runManualOpen(args []string) int {
 	sc, ok := findManualStrategy(cfg, strategyID)
 	if !ok {
 		return 1
+	}
+
+	if *symbolOverride != "" {
+		sc.Symbol = strings.ToUpper(strings.TrimSpace(*symbolOverride))
 	}
 
 	// #696: resolve --side default after config load so manual_defaults.side
