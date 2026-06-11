@@ -41,7 +41,6 @@
       "margin_mode": "isolated",
       "direction": "both",
       "stop_loss_atr_mult": 2.0,
-      "trailing_stop_atr_mult": 1.5,
       "close_strategies": [
         {
           "name": "tiered_tp_atr_live",
