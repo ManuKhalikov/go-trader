@@ -3,7 +3,7 @@
   "interval_seconds": 3600,
   "db_file": "scheduler/state.db",
   "log_dir": "logs",
-  "auto_update": "daily",
+  "auto_update": "off",
   "status_port": 8099,
   "risk_free_rate": 0.04,
   "default_stop_loss_atr_mult": 2.0,
