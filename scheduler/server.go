@@ -260,12 +260,28 @@ func (ss *StatusServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"version": Version,
 		"pid":     pid,
 	}
-	if !lastCycle.IsZero() && time.Since(lastCycle) > 30*time.Minute {
+	// Manual-only deployments execute via HTTP /manual-open; a stale scheduler
+	// cycle is normal when interval_seconds exceeds the 30m probe window.
+	if !lastCycle.IsZero() && time.Since(lastCycle) > 30*time.Minute && !ss.allStrategiesManual() {
 		resp["status"] = "unhealthy"
 		resp["reason"] = "main loop stale"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (ss *StatusServer) allStrategiesManual() bool {
+	ss.strategiesMu.RLock()
+	defer ss.strategiesMu.RUnlock()
+	if len(ss.strategies) == 0 {
+		return false
+	}
+	for _, sc := range ss.strategies {
+		if sc.Type != "manual" {
+			return false
+		}
+	}
+	return true
 }
 
 func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
