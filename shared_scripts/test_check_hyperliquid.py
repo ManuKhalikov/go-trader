@@ -879,6 +879,58 @@ class TestSyncProtection:
         adapter.place_stop_loss.assert_not_called()
         adapter.lookup_fill_fee_by_oid.assert_not_called()
 
+    def test_sl_indexer_lag_retries_before_duplicate_place(self):
+        """Known SL OID missing on first fetch but indexed on retry → no second SL."""
+        open_calls = {"n": 0}
+
+        def open_oids_side_effect(*_args, **_kwargs):
+            open_calls["n"] += 1
+            # Initial fetch + first retry: indexer lag; second retry: OID visible.
+            if open_calls["n"] <= 2:
+                return set()
+            return {100}
+
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.open_order_oids.side_effect = open_oids_side_effect
+        mock_adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 4)
+        mock_adapter.round_size.side_effect = lambda _sym, sz: round(sz, 3)
+        mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000) / 1000
+        mock_adapter.lookup_fill_fee_by_oid.return_value = {}
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                with patch.object(mod.time, "sleep"):
+                    mod.run_sync_protection(
+                        "BTC",
+                        "long",
+                        0.002,
+                        63854.0,
+                        949.0,
+                        "live",
+                        stop_loss_atr_mult=2.0,
+                        stop_loss_oid=100,
+                        tp_tiers=[],
+                    )
+        out = json.loads(captured.getvalue())
+        assert out.get("stop_loss_oid") == 100
+        mock_adapter.place_stop_loss.assert_not_called()
+        assert mock_adapter.open_order_oids.call_count >= 3
+
     def test_missing_oid_with_no_fill_places_replacement(self):
         """OID gone from open_orders AND not in userFills → cancelled, place new."""
         out, adapter = self._run_sync(

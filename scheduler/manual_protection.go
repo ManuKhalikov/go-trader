@@ -68,9 +68,18 @@ func placeManualProtectionInline(
 		return nil, "", nil
 	}
 
+	// SL is armed inline in manual-open before this call. Passing the ATR mult
+	// into sync-protection would re-run the SL path; if HL's open-order indexer
+	// has not yet listed the freshly placed OID, sync-protection treats it as
+	// cancelled and places a duplicate stop (#manual-open duplicate SL).
+	slMultForSync := effectiveSLATRMult
+	if stopLossOID > 0 {
+		slMultForSync = 0
+	}
+
 	result, stderr, err := runHLSyncProtectionFn(
 		sc.Script, sc.Symbol, side, fillQty, fillPrice, entryATR,
-		effectiveSLATRMult, tiers, stopLossOID, nil, nil, false, nil, nil, nil,
+		slMultForSync, tiers, stopLossOID, nil, nil, false, nil, nil, nil,
 	)
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "[manual-open] sync-protection stderr: %s\n", stderr)

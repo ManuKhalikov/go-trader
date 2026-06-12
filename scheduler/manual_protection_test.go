@@ -50,6 +50,54 @@ func TestPlaceManualProtectionInline_NoTiers(t *testing.T) {
 	}
 }
 
+func TestPlaceManualProtectionInline_SkipsSLSyncWhenAlreadyArmed(t *testing.T) {
+	orig := runHLSyncProtectionFn
+	defer func() { runHLSyncProtectionFn = orig }()
+
+	var gotSLMult float64
+	runHLSyncProtectionFn = func(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, _ []bool, _ bool, _ []bool, _ []int64, _ []byte) (*HyperliquidProtectionSyncResult, string, error) {
+		gotSLMult = stopLossATRMult
+		return &HyperliquidProtectionSyncResult{TPOIDs: []int64{1001}}, "", nil
+	}
+
+	sc := StrategyConfig{
+		Type:          "manual",
+		Platform:      "hyperliquid",
+		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"},
+	}
+	_, _, err := placeManualProtectionInline(sc, "long", 0.002, 63854, 949, 2.0, 12345)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotSLMult != 0 {
+		t.Errorf("stopLossATRMult for sync-protection: got %.2f want 0 when SL OID already set", gotSLMult)
+	}
+}
+
+func TestPlaceManualProtectionInline_PassesSLSyncWhenNotYetArmed(t *testing.T) {
+	orig := runHLSyncProtectionFn
+	defer func() { runHLSyncProtectionFn = orig }()
+
+	var gotSLMult float64
+	runHLSyncProtectionFn = func(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, _ []bool, _ bool, _ []bool, _ []int64, _ []byte) (*HyperliquidProtectionSyncResult, string, error) {
+		gotSLMult = stopLossATRMult
+		return &HyperliquidProtectionSyncResult{TPOIDs: []int64{1001}}, "", nil
+	}
+
+	sc := StrategyConfig{
+		Type:          "manual",
+		Platform:      "hyperliquid",
+		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"},
+	}
+	_, _, err := placeManualProtectionInline(sc, "long", 0.002, 63854, 949, 2.0, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotSLMult != 2.0 {
+		t.Errorf("stopLossATRMult for sync-protection: got %.2f want 2.0 when SL not yet armed", gotSLMult)
+	}
+}
+
 func TestPlaceManualProtectionInline_TPErrorsSurface(t *testing.T) {
 	orig := runHLSyncProtectionFn
 	defer func() { runHLSyncProtectionFn = orig }()

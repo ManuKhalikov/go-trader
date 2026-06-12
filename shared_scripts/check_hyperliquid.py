@@ -609,6 +609,19 @@ def run_sync_protection(
             out["tp_cancel_filled_oids"] = surplus_cancel_filled
 
         if stop_loss_atr_mult > 0:
+            # HL's open-order indexer can lag immediately after placement; re-fetch
+            # before treating a known SL OID as missing/cancelled (#manual-open dup SL).
+            if stop_loss_oid > 0 and not _oid_is_open(open_oids, stop_loss_oid):
+                for _ in range(3):
+                    time.sleep(0.35)
+                    try:
+                        open_oids = adapter.open_order_oids(symbol)
+                    except Exception as oe:
+                        out["open_order_check_error"] = str(oe)
+                        break
+                    if _oid_is_open(open_oids, stop_loss_oid):
+                        break
+
             if side == "long":
                 sl_px = avg_cost - stop_loss_atr_mult * entry_atr
             else:
