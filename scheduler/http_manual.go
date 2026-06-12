@@ -20,6 +20,7 @@ type manualOpenBody struct {
 
 type manualCloseBody struct {
 	StrategyID string `json:"strategy_id"`
+	Symbol     string `json:"symbol,omitempty"`
 }
 
 func (ss *StatusServer) configPathForManual() string {
@@ -151,6 +152,9 @@ func (ss *StatusServer) handleManualCloseHTTP(w http.ResponseWriter, r *http.Req
 	}
 
 	args := []string{body.StrategyID, "--config", ss.configPathForManual()}
+	if sym := strings.ToUpper(strings.TrimSpace(body.Symbol)); sym != "" {
+		args = append(args, "--symbol", sym)
+	}
 	code, stderr := runManualCloseCapture(args)
 	w.Header().Set("Content-Type", "application/json")
 	if code != 0 {

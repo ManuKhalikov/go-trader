@@ -1,5 +1,5 @@
 {
-  "config_version": 15,
+  "config_version": 16,
   "interval_seconds": 900,
   "db_file": "scheduler/state.db",
   "log_dir": "logs",
@@ -34,6 +34,162 @@
       "type": "manual",
       "platform": "hyperliquid",
       "symbol": "BTC",
+      "timeframe": "4h",
+      "capital": 89.80,
+      "max_drawdown_pct": 10,
+      "leverage": 20,
+      "margin_mode": "isolated",
+      "direction": "both",
+      "stop_loss_atr_mult": 2.0,
+      "close_strategies": [
+        {
+          "name": "tiered_tp_atr_live",
+          "params": {
+            "tiers": [
+              { "atr_mult": 1.0, "fraction": 0.40 },
+              { "atr_mult": 2.0, "fraction": 0.35 },
+              { "atr_mult": 3.0, "fraction": 0.25 }
+            ]
+          }
+        }
+      ],
+      "allowed_regimes": ["trending_up", "trending_down"]
+    },
+    {
+      "id": "hl-roundtable-eth",
+      "type": "manual",
+      "platform": "hyperliquid",
+      "symbol": "ETH",
+      "timeframe": "4h",
+      "capital": 89.80,
+      "max_drawdown_pct": 10,
+      "leverage": 20,
+      "margin_mode": "isolated",
+      "direction": "both",
+      "stop_loss_atr_mult": 2.0,
+      "close_strategies": [
+        {
+          "name": "tiered_tp_atr_live",
+          "params": {
+            "tiers": [
+              { "atr_mult": 1.0, "fraction": 0.40 },
+              { "atr_mult": 2.0, "fraction": 0.35 },
+              { "atr_mult": 3.0, "fraction": 0.25 }
+            ]
+          }
+        }
+      ],
+      "allowed_regimes": ["trending_up", "trending_down"]
+    },
+    {
+      "id": "hl-roundtable-sol",
+      "type": "manual",
+      "platform": "hyperliquid",
+      "symbol": "SOL",
+      "timeframe": "4h",
+      "capital": 89.80,
+      "max_drawdown_pct": 10,
+      "leverage": 20,
+      "margin_mode": "isolated",
+      "direction": "both",
+      "stop_loss_atr_mult": 2.0,
+      "close_strategies": [
+        {
+          "name": "tiered_tp_atr_live",
+          "params": {
+            "tiers": [
+              { "atr_mult": 1.0, "fraction": 0.40 },
+              { "atr_mult": 2.0, "fraction": 0.35 },
+              { "atr_mult": 3.0, "fraction": 0.25 }
+            ]
+          }
+        }
+      ],
+      "allowed_regimes": ["trending_up", "trending_down"]
+    },
+    {
+      "id": "hl-roundtable-sp500",
+      "type": "manual",
+      "platform": "hyperliquid",
+      "symbol": "SP500",
+      "timeframe": "4h",
+      "capital": 89.80,
+      "max_drawdown_pct": 10,
+      "leverage": 20,
+      "margin_mode": "isolated",
+      "direction": "both",
+      "stop_loss_atr_mult": 2.0,
+      "close_strategies": [
+        {
+          "name": "tiered_tp_atr_live",
+          "params": {
+            "tiers": [
+              { "atr_mult": 1.0, "fraction": 0.40 },
+              { "atr_mult": 2.0, "fraction": 0.35 },
+              { "atr_mult": 3.0, "fraction": 0.25 }
+            ]
+          }
+        }
+      ],
+      "allowed_regimes": ["trending_up", "trending_down"]
+    },
+    {
+      "id": "hl-roundtable-gold",
+      "type": "manual",
+      "platform": "hyperliquid",
+      "symbol": "GOLD",
+      "timeframe": "4h",
+      "capital": 89.80,
+      "max_drawdown_pct": 10,
+      "leverage": 20,
+      "margin_mode": "isolated",
+      "direction": "both",
+      "stop_loss_atr_mult": 2.0,
+      "close_strategies": [
+        {
+          "name": "tiered_tp_atr_live",
+          "params": {
+            "tiers": [
+              { "atr_mult": 1.0, "fraction": 0.40 },
+              { "atr_mult": 2.0, "fraction": 0.35 },
+              { "atr_mult": 3.0, "fraction": 0.25 }
+            ]
+          }
+        }
+      ],
+      "allowed_regimes": ["trending_up", "trending_down"]
+    },
+    {
+      "id": "hl-roundtable-nvda",
+      "type": "manual",
+      "platform": "hyperliquid",
+      "symbol": "NVDA",
+      "timeframe": "4h",
+      "capital": 89.80,
+      "max_drawdown_pct": 10,
+      "leverage": 20,
+      "margin_mode": "isolated",
+      "direction": "both",
+      "stop_loss_atr_mult": 2.0,
+      "close_strategies": [
+        {
+          "name": "tiered_tp_atr_live",
+          "params": {
+            "tiers": [
+              { "atr_mult": 1.0, "fraction": 0.40 },
+              { "atr_mult": 2.0, "fraction": 0.35 },
+              { "atr_mult": 3.0, "fraction": 0.25 }
+            ]
+          }
+        }
+      ],
+      "allowed_regimes": ["trending_up", "trending_down"]
+    },
+    {
+      "id": "hl-roundtable-tsla",
+      "type": "manual",
+      "platform": "hyperliquid",
+      "symbol": "TSLA",
       "timeframe": "4h",
       "capital": 89.80,
       "max_drawdown_pct": 10,

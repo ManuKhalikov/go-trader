@@ -625,6 +625,7 @@ func runManualAdd(args []string) int {
 func runManualClose(args []string) int {
 	fs := flag.NewFlagSet("manual-close", flag.ContinueOnError)
 	configPath := fs.String("config", "scheduler/config.json", "Path to config file")
+	symbolOverride := fs.String("symbol", "", "Override strategy symbol for this close (e.g. ETH)")
 	qty := fs.Float64("qty", 0, "Quantity to close in base units (0 = full position)")
 	dryRun := fs.Bool("dry-run", false, "Print planned action without placing order or mutating state")
 
@@ -634,7 +635,7 @@ func runManualClose(args []string) int {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "Usage: go-trader manual-close <strategy-id> [--qty N] [--dry-run]")
+		fmt.Fprintln(os.Stderr, "Usage: go-trader manual-close <strategy-id> [--symbol COIN] [--qty N] [--dry-run]")
 		return 2
 	}
 	strategyID := fs.Arg(0)
@@ -663,13 +664,17 @@ func runManualClose(args []string) int {
 		return 1
 	}
 	ss := state.Strategies[strategyID]
-	pos := ss.Positions[sc.Symbol]
+	closeSymbol := sc.Symbol
+	if *symbolOverride != "" {
+		closeSymbol = strings.ToUpper(strings.TrimSpace(*symbolOverride))
+	}
+	pos := ss.Positions[closeSymbol]
 	if pos == nil {
-		fmt.Fprintf(os.Stderr, "error: no open position found for %s/%s\n", strategyID, sc.Symbol)
+		fmt.Fprintf(os.Stderr, "error: no open position found for %s/%s\n", strategyID, closeSymbol)
 		return 1
 	}
 	if !manualPositionOwnedByStrategy(pos, strategyID) {
-		fmt.Fprintf(os.Stderr, "error: position %s/%s is owned by %q, not %q\n", strategyID, sc.Symbol, pos.OwnerStrategyID, strategyID)
+		fmt.Fprintf(os.Stderr, "error: position %s/%s is owned by %q, not %q\n", strategyID, closeSymbol, pos.OwnerStrategyID, strategyID)
 		return 1
 	}
 
@@ -698,7 +703,7 @@ func runManualClose(args []string) int {
 
 	if *dryRun {
 		fmt.Printf("[dry-run] manual-close %s: %s %.6f %s (current pos=%.6f, avg_cost=$%.4f)\n",
-			strategyID, closeSide, closeQty, sc.Symbol, pos.Quantity, pos.AvgCost)
+			strategyID, closeSide, closeQty, closeSymbol, pos.Quantity, pos.AvgCost)
 		return 0
 	}
 
@@ -709,7 +714,7 @@ func runManualClose(args []string) int {
 	}
 	closeFullPosition := shouldCloseFullPosition(
 		manualCloseIntentFraction(intentFullClose, closeQty, pos.Quantity),
-		sc.Symbol,
+		closeSymbol,
 		hyperliquidCloseScopeStrategies(cfg.Strategies),
 	)
 	var extraCancelOIDs []int64
@@ -718,7 +723,7 @@ func runManualClose(args []string) int {
 	}
 
 	execResult, stderr, execErr := RunHyperliquidExecute(
-		sc.Script, sc.Symbol, closeSide, closeQty,
+		sc.Script, closeSymbol, closeSide, closeQty,
 		0, cancelOID, 0, "", 0, closeFullPosition, hlExecuteSnapshot{}, extraCancelOIDs...,
 	)
 	if stderr != "" {
@@ -738,7 +743,7 @@ func runManualClose(args []string) int {
 	if execResult.CancelStopLossError != "" {
 		fmt.Fprintf(os.Stderr,
 			"warning: manual close cancel failed (non-fatal) for %s/%s: %s (sl_oid=%d tp_oids=%v) — verify HL on-chain triggers\n",
-			strategyID, sc.Symbol, execResult.CancelStopLossError, cancelOID, extraCancelOIDs)
+			strategyID, closeSymbol, execResult.CancelStopLossError, cancelOID, extraCancelOIDs)
 	}
 
 	fill := execResult.Execution
@@ -763,12 +768,12 @@ func runManualClose(args []string) int {
 	realizedPnL -= fillFee
 
 	fmt.Printf("Closed: %.6f %s @ $%.4f | PnL=$%.2f (fee=$%.4f)\n",
-		closeQty, sc.Symbol, fillAvgPx, realizedPnL, fillFee)
+		closeQty, closeSymbol, fillAvgPx, realizedPnL, fillFee)
 
 	action := PendingManualAction{
 		StrategyID:      strategyID,
 		Action:          "close",
-		Symbol:          sc.Symbol,
+		Symbol:          closeSymbol,
 		Side:            closeSide,
 		Quantity:        closeQty,
 		FillPrice:       fillAvgPx,
