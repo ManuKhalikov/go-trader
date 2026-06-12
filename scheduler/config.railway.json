@@ -37,7 +37,7 @@
       "timeframe": "4h",
       "capital": 89.80,
       "max_drawdown_pct": 10,
-      "leverage": 1,
+      "leverage": 20,
       "margin_mode": "isolated",
       "direction": "both",
       "stop_loss_atr_mult": 2.0,
