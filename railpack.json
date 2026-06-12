@@ -9,6 +9,7 @@
     "build": {
       "commands": [
         "uv sync",
+        "cp scheduler/config.railway.json scheduler/config.json",
         "cd scheduler && go build -o ../go-trader ."
       ]
     }

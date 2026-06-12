@@ -1,5 +1,5 @@
 [build]
-buildCommand = "uv sync && cd scheduler && go build -o ../go-trader ."
+buildCommand = "uv sync && cp scheduler/config.railway.json scheduler/config.json && cd scheduler && go build -o ../go-trader ."
 
 [deploy]
 startCommand = "sh -c './go-trader --config scheduler/config.railway.json --status-port ${PORT:-8080}'"

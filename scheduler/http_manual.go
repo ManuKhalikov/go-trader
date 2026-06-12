@@ -22,9 +22,12 @@ type manualCloseBody struct {
 	StrategyID string `json:"strategy_id"`
 }
 
-func manualConfigPath() string {
+func (ss *StatusServer) configPathForManual() string {
 	if p := os.Getenv("GOTRADER_CONFIG"); p != "" {
 		return p
+	}
+	if ss.configPath != "" {
+		return ss.configPath
 	}
 	return "scheduler/config.json"
 }
@@ -92,7 +95,7 @@ func (ss *StatusServer) handleManualOpenHTTP(w http.ResponseWriter, r *http.Requ
 		"--side", body.Side,
 		"--notional", strconv.FormatFloat(body.Notional, 'f', -1, 64),
 		"--symbol", body.Symbol,
-		"--config", manualConfigPath(),
+		"--config", ss.configPathForManual(),
 	}
 	if body.FillPrice > 0 {
 		args = append(args, "--fill-price", strconv.FormatFloat(body.FillPrice, 'f', -1, 64))
@@ -147,7 +150,7 @@ func (ss *StatusServer) handleManualCloseHTTP(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	args := []string{body.StrategyID, "--config", manualConfigPath()}
+	args := []string{body.StrategyID, "--config", ss.configPathForManual()}
 	code, stderr := runManualCloseCapture(args)
 	w.Header().Set("Content-Type", "application/json")
 	if code != 0 {
