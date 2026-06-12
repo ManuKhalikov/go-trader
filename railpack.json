@@ -1,7 +1,21 @@
 {
   "$schema": "https://schema.railpack.com",
   "packages": {
-    "go": "1.26.2"
+    "go": "1.26.2",
+    "python": "3.12"
+  },
+  "steps": {
+    "setup": {
+      "commands": [
+        "curl -LsSf https://astral.sh/uv/install.sh | sh",
+        "export PATH=\"$HOME/.local/bin:$PATH\"",
+        "uv sync"
+      ]
+    },
+    "build": {
+      "inputs": [{ "step": "setup" }],
+      "commands": ["cd scheduler && go build -o ../go-trader ."]
+    }
   },
   "deploy": {
     "startCommand": "./go-trader --config scheduler/config.railway.json"

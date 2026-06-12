@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -96,14 +98,18 @@ func (ss *StatusServer) handleManualOpenHTTP(w http.ResponseWriter, r *http.Requ
 		args = append(args, "--fill-price", strconv.FormatFloat(body.FillPrice, 'f', -1, 64))
 	}
 
-	code := runManualOpen(args)
+	code, stderr := runManualOpenCapture(args)
 	w.Header().Set("Content-Type", "application/json")
 	if code != 0 {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]any{
+		resp := map[string]any{
 			"error":     "manual-open failed",
 			"exit_code": code,
-		})
+		}
+		if stderr != "" {
+			resp["detail"] = strings.TrimSpace(stderr)
+		}
+		json.NewEncoder(w).Encode(resp)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]string{
@@ -142,18 +148,46 @@ func (ss *StatusServer) handleManualCloseHTTP(w http.ResponseWriter, r *http.Req
 	}
 
 	args := []string{body.StrategyID, "--config", manualConfigPath()}
-	code := runManualClose(args)
+	code, stderr := runManualCloseCapture(args)
 	w.Header().Set("Content-Type", "application/json")
 	if code != 0 {
 		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]any{
+		resp := map[string]any{
 			"error":     "manual-close failed",
 			"exit_code": code,
-		})
+		}
+		if stderr != "" {
+			resp["detail"] = strings.TrimSpace(stderr)
+		}
+		json.NewEncoder(w).Encode(resp)
 		return
 	}
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":      "ok",
 		"strategy_id": body.StrategyID,
 	})
+}
+
+func runManualOpenCapture(args []string) (int, string) {
+	return captureStderr(func() int { return runManualOpen(args) })
+}
+
+func runManualCloseCapture(args []string) (int, string) {
+	return captureStderr(func() int { return runManualClose(args) })
+}
+
+func captureStderr(fn func() int) (int, string) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return fn(), ""
+	}
+	old := os.Stderr
+	os.Stderr = w
+	code := fn()
+	w.Close()
+	os.Stderr = old
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	r.Close()
+	return code, buf.String()
 }
