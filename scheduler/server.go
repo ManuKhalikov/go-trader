@@ -297,6 +297,14 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	prices := ss.fetchLiveMarkPrices()
 
+	ss.strategiesMu.RLock()
+	strategies := append([]StrategyConfig(nil), ss.strategies...)
+	ss.strategiesMu.RUnlock()
+
+	// Refresh exchange-authoritative shared-wallet display values so /status
+	// reflects the live HL balance even between scheduler cycles.
+	ss.refreshSharedWalletDisplay(strategies)
+
 	// Re-acquire read lock to build the response
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
@@ -335,8 +343,10 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	totalValue := 0.0
-	for _, s := range ss.state.Strategies {
-		totalValue += displayStrategyValue(s, prices)
+	sharedWallets := detectSharedWallets(strategies)
+	if len(strategies) > 0 {
+		walletBalances := make(map[SharedWalletKey]float64)
+		totalValue, _ = computeSubsetDisplayValue(strategies, ss.state, prices, walletBalances, sharedWallets)
 	}
 	totalNotional := PortfolioNotional(ss.state.Strategies, prices)
 
@@ -422,6 +432,45 @@ func (ss *StatusServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// refreshSharedWalletDisplay recomputes exchange-authoritative per-strategy
+// display values for shared wallets using a live balance fetch. Called from
+// /status so the dashboard reflects real HL equity between scheduler cycles.
+func (ss *StatusServer) refreshSharedWalletDisplay(strategies []StrategyConfig) {
+	if ss == nil || ss.state == nil || ss.mu == nil {
+		return
+	}
+	sharedWallets := detectSharedWallets(strategies)
+	if len(sharedWallets) == 0 {
+		return
+	}
+
+	walletBalances := make(map[SharedWalletKey]float64)
+	var hlPositions []HLPosition
+	hlAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
+	hlKey := SharedWalletKey{Platform: "hyperliquid", Account: hlAddr}
+	if _, ok := sharedWallets[hlKey]; ok && hlAddr != "" {
+		if bal, pos, err := fetchHyperliquidState(hlAddr); err != nil {
+			fmt.Printf("[WARN] /status shared-wallet refresh: hyperliquid fetch failed: %v\n", err)
+		} else {
+			walletBalances[hlKey] = bal
+			hlPositions = pos
+		}
+	}
+
+	okxKey := SharedWalletKey{Platform: "okx", Account: os.Getenv("OKX_API_KEY")}
+	if _, ok := sharedWallets[okxKey]; ok && okxKey.Account != "" {
+		if bal, err := defaultSharedWalletFetcher(okxKey); err != nil {
+			fmt.Printf("[WARN] /status shared-wallet refresh: okx fetch failed: %v\n", err)
+		} else {
+			walletBalances[okxKey] = bal
+		}
+	}
+
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	reconcileSharedWalletDisplayValues(strategies, ss.state, ss.stateDB, sharedWallets, walletBalances, hlPositions, nil, false)
 }
 
 // fetchLiveMarkPrices returns best-effort mark prices for /status and dashboard

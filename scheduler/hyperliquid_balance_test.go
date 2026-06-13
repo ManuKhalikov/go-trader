@@ -93,6 +93,82 @@ func TestFetchHyperliquidState(t *testing.T) {
 	}
 }
 
+func TestFetchHyperliquidStateUnifiedAccountUsesSpotUSDC(t *testing.T) {
+	perpsResp := map[string]interface{}{
+		"marginSummary": map[string]string{
+			"accountValue":    "0",
+			"totalMarginUsed": "0",
+		},
+		"assetPositions": []interface{}{},
+	}
+	spotResp := map[string]interface{}{
+		"balances": []map[string]string{
+			{"coin": "USDC", "total": "89.22", "hold": "0"},
+		},
+		"tokenToAvailableAfterMaintenance": [][]interface{}{
+			{0, "89.22"},
+		},
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]string
+		json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		switch req["type"] {
+		case "spotClearinghouseState":
+			json.NewEncoder(w).Encode(spotResp)
+		default:
+			json.NewEncoder(w).Encode(perpsResp)
+		}
+	}))
+	defer ts.Close()
+
+	origURL := hlMainnetURL
+	hlMainnetURL = ts.URL
+	defer func() { hlMainnetURL = origURL }()
+
+	balance, _, err := fetchHyperliquidState("0xabc123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if balance != 89.22 {
+		t.Errorf("unified balance = %g, want 89.22", balance)
+	}
+}
+
+func TestComputeHyperliquidEquity(t *testing.T) {
+	tests := []struct {
+		name      string
+		perps     float64
+		margin    float64
+		spot      hlSpotUSDC
+		wantTotal float64
+	}{
+		{
+			name:      "standard perps plus spot",
+			perps:     1000,
+			margin:    200,
+			spot:      hlSpotUSDC{Total: 50, Available: 50},
+			wantTotal: 1050,
+		},
+		{
+			name:      "unified account uses spot only",
+			perps:     0,
+			margin:    0,
+			spot:      hlSpotUSDC{Total: 89.22, Available: 89.22},
+			wantTotal: 89.22,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := computeHyperliquidEquity(tc.perps, tc.margin, tc.spot)
+			if math.Abs(got-tc.wantTotal) > 0.001 {
+				t.Errorf("got %g, want %g", got, tc.wantTotal)
+			}
+		})
+	}
+}
+
 func TestFetchHyperliquidStateNoPositions(t *testing.T) {
 	resp := map[string]interface{}{
 		"marginSummary": map[string]string{

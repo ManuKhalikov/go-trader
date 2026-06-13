@@ -189,6 +189,39 @@ func reconcileSharedWalletMemberValues(
 	return sharedWalletReconcileResult{Values: values, Drift: drift, OrphanCoins: orphanCoins}
 }
 
+// sharedWalletIsFlat reports whether a shared wallet has no on-chain positions
+// and no modeled virtual positions — the roundtable pattern where strategies
+// take turns using the full pool but only one is live at a time.
+func sharedWalletIsFlat(positions []SharedWalletPosition, virtualQty map[string]map[string]float64) bool {
+	for _, p := range positions {
+		if p.Size != 0 {
+			return false
+		}
+	}
+	for _, byMember := range virtualQty {
+		for _, qty := range byMember {
+			if qty > 0 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// applySharedWalletPooledDisplay overrides per-member display values to the
+// full live wallet balance when the wallet is flat. Each strategy row then
+// shows "100% available when this strategy trades"; the TOTAL row dedupes the
+// wallet once via computeSubsetDisplayValue.
+func applySharedWalletPooledDisplay(res *sharedWalletReconcileResult, members []string, accountBalance float64, flat bool) {
+	if res == nil || !flat || accountBalance <= 0 {
+		return
+	}
+	for _, id := range members {
+		res.Values[id] = roundCents(accountBalance)
+	}
+	res.Drift = 0
+}
+
 // attributeSharedWalletUPnL splits each coin's exchange-reported unrealized
 // PnL across the members that virtually own it (by virtual-quantity share —
 // mirrors hyperliquidKillSwitchFillShare). Coins with on-chain uPnL but no
@@ -434,7 +467,9 @@ func reconcileSharedWalletDisplayValues(
 		} else {
 			res = reconcileSharedWalletMemberValues(members, capitalByID, positions, virtualQty, bal)
 		}
+		applySharedWalletPooledDisplay(&res, members, bal, sharedWalletIsFlat(positions, virtualQty))
 		memberSum := 0.0
+		pooledFlat := sharedWalletIsFlat(positions, virtualQty)
 		for _, id := range members {
 			ss := state.Strategies[id]
 			if ss == nil {
@@ -442,7 +477,12 @@ func reconcileSharedWalletDisplayValues(
 			}
 			ss.SharedWalletValue = res.Values[id]
 			ss.SharedWalletValueSet = true
-			memberSum += res.Values[id]
+			if !pooledFlat {
+				memberSum += res.Values[id]
+			}
+		}
+		if pooledFlat {
+			memberSum = roundCents(bal)
 		}
 		results = append(results, sharedWalletDriftResult{
 			Key:         key,
@@ -629,6 +669,32 @@ func displayStrategyValue(s *StrategyState, prices map[string]float64) float64 {
 // atomically), so the fallback never sees a partially-gated wallet.
 //
 // Display-only: risk math keeps computeTotalPortfolioValue / PortfolioValue.
+// sharedWalletMembersSharePooledDisplay is true when every member of a shared
+// wallet carries the same exchange-derived display value — the roundtable
+// pattern where each row shows 100% of the pool while flat.
+func sharedWalletMembersSharePooledDisplay(state *AppState, memberIDs []string) bool {
+	if len(memberIDs) < 2 {
+		return false
+	}
+	var ref float64
+	set := 0
+	for _, id := range memberIDs {
+		s := state.Strategies[id]
+		if s == nil || !s.SharedWalletValueSet {
+			return false
+		}
+		if set == 0 {
+			ref = s.SharedWalletValue
+			set++
+			continue
+		}
+		if math.Abs(s.SharedWalletValue-ref) > 0.01 {
+			return false
+		}
+	}
+	return set >= 2
+}
+
 func computeSubsetDisplayValue(
 	subset []StrategyConfig,
 	state *AppState,
@@ -637,13 +703,24 @@ func computeSubsetDisplayValue(
 	accountShared map[SharedWalletKey][]string,
 ) (float64, bool) {
 	gated := 0.0
+	walletGated := make(map[SharedWalletKey]float64)
 	var rest []StrategyConfig
 	for _, sc := range subset {
 		if s, ok := state.Strategies[sc.ID]; ok && s != nil && s.SharedWalletValueSet {
+			key, shared := walletKeyFor(sc)
+			if shared && len(accountShared[key]) > 1 && sharedWalletMembersSharePooledDisplay(state, accountShared[key]) {
+				if _, seen := walletGated[key]; !seen {
+					walletGated[key] = s.SharedWalletValue
+				}
+				continue
+			}
 			gated += s.SharedWalletValue
 			continue
 		}
 		rest = append(rest, sc)
+	}
+	for _, v := range walletGated {
+		gated += v
 	}
 	if len(rest) == 0 {
 		return gated, false

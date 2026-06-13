@@ -133,3 +133,34 @@ func TestReconcileSharedWallet_NoCapital_EqualSplit(t *testing.T) {
 		t.Errorf("expected 250/250 equal split, got a=%v b=%v", res.Values["a"], res.Values["b"])
 	}
 }
+
+func TestApplySharedWalletPooledDisplay_FlatWalletFullBalanceEach(t *testing.T) {
+	members := []string{"hl-btc", "hl-eth"}
+	res := reconcileSharedWalletMemberValues(members, map[string]float64{
+		"hl-btc": 600, "hl-eth": 400,
+	}, nil, nil, 89.22)
+	applySharedWalletPooledDisplay(&res, members, 89.22, true)
+
+	for _, id := range members {
+		if math.Abs(res.Values[id]-89.22) > 0.01 {
+			t.Errorf("%s = %v, want 89.22 (full pooled balance)", id, res.Values[id])
+		}
+	}
+}
+
+func TestComputeSubsetDisplayValue_DedupesSharedWalletOnce(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "BTC", "1h", "--mode=live"}, Capital: 100},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "perps", Args: []string{"sma", "ETH", "1h", "--mode=live"}, Capital: 100},
+	}
+	state := &AppState{Strategies: map[string]*StrategyState{
+		"hl-a": {ID: "hl-a", SharedWalletValue: 89.22, SharedWalletValueSet: true},
+		"hl-b": {ID: "hl-b", SharedWalletValue: 89.22, SharedWalletValueSet: true},
+	}}
+	shared := detectSharedWallets(strategies)
+	got, _ := computeSubsetDisplayValue(strategies, state, nil, nil, shared)
+	if math.Abs(got-89.22) > 0.01 {
+		t.Errorf("total display = %v, want 89.22 (wallet counted once)", got)
+	}
+}

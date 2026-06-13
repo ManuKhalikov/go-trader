@@ -102,49 +102,104 @@ func defaultHyperliquidLiveCloser(symbol string, partialSz *float64, cancelStopL
 	return result, err
 }
 
-// fetchHyperliquidBalance fetches the live USDC balance (accountValue) from
-// the Hyperliquid clearinghouseState endpoint for a given address.
-// Returns 0 and a non-nil error if the request fails or the response is unexpected.
+// hlSpotUSDC holds spot-wallet USDC totals for unified-account detection.
+type hlSpotUSDC struct {
+	Total     float64
+	Available float64
+}
+
+// fetchHyperliquidBalance fetches the live trading equity for a given address.
+// Unified HL accounts keep collateral in spot USDC while perps accountValue is
+// zero — this mirrors the agent's hlAccount.ts logic.
 func fetchHyperliquidBalance(accountAddress string) (float64, error) {
-	payload := map[string]string{
-		"type": "clearinghouseState",
-		"user": accountAddress,
-	}
+	equity, _, err := fetchHyperliquidAccountEquity(accountAddress)
+	return equity, err
+}
+
+// hlInfoPost posts a typed request to the HL /info endpoint.
+func hlInfoPost(payload map[string]string) ([]byte, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return 0, fmt.Errorf("marshal request: %w", err)
+		return nil, fmt.Errorf("marshal request: %w", err)
 	}
-
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Post(hlMainnetURL+"/info", "application/json", bytes.NewReader(body))
 	if err != nil {
-		return 0, fmt.Errorf("http request: %w", err)
+		return nil, fmt.Errorf("http request: %w", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("http %d from %s", resp.StatusCode, hlMainnetURL)
+		return nil, fmt.Errorf("http %d from %s", resp.StatusCode, hlMainnetURL)
 	}
-
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return 0, fmt.Errorf("read response: %w", err)
+		return nil, fmt.Errorf("read response: %w", err)
 	}
+	return data, nil
+}
 
+func parseHLSpotUSDC(data []byte) (hlSpotUSDC, error) {
 	var result struct {
-		MarginSummary struct {
-			AccountValue string `json:"accountValue"`
-		} `json:"marginSummary"`
+		Balances []struct {
+			Coin  string `json:"coin"`
+			Total string `json:"total"`
+			Hold  string `json:"hold"`
+		} `json:"balances"`
+		TokenToAvailableAfterMaintenance [][2]json.RawMessage `json:"tokenToAvailableAfterMaintenance"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
-		return 0, fmt.Errorf("parse response: %w", err)
+		return hlSpotUSDC{}, fmt.Errorf("parse spot response: %w", err)
 	}
+	spot := hlSpotUSDC{}
+	for _, b := range result.Balances {
+		if b.Coin != "USDC" {
+			continue
+		}
+		spot.Total, _ = strconv.ParseFloat(b.Total, 64)
+		hold, _ := strconv.ParseFloat(b.Hold, 64)
+		spot.Available = math.Max(0, spot.Total-hold)
+		break
+	}
+	for _, entry := range result.TokenToAvailableAfterMaintenance {
+		if len(entry) != 2 {
+			continue
+		}
+		var token int
+		if err := json.Unmarshal(entry[0], &token); err != nil || token != 0 {
+			continue
+		}
+		var avail string
+		if err := json.Unmarshal(entry[1], &avail); err != nil {
+			continue
+		}
+		if parsed, err := strconv.ParseFloat(avail, 64); err == nil {
+			spot.Available = parsed
+		}
+		break
+	}
+	return spot, nil
+}
 
-	val, err := strconv.ParseFloat(result.MarginSummary.AccountValue, 64)
+func fetchHyperliquidSpotUSDC(accountAddress string) (hlSpotUSDC, error) {
+	data, err := hlInfoPost(map[string]string{
+		"type": "spotClearinghouseState",
+		"user": accountAddress,
+	})
 	if err != nil {
-		return 0, fmt.Errorf("parse accountValue %q: %w", result.MarginSummary.AccountValue, err)
+		return hlSpotUSDC{}, err
 	}
-	return val, nil
+	return parseHLSpotUSDC(data)
+}
+
+// computeHyperliquidEquity returns total trading equity. Unified accounts use
+// spot USDC as the sole collateral source; standard accounts sum perps + spot.
+func computeHyperliquidEquity(perpsAccountValue, perpsMarginUsed float64, spot hlSpotUSDC) float64 {
+	perpsFree := math.Max(0, perpsAccountValue-perpsMarginUsed)
+	unified := perpsFree <= 0 && spot.Available > 0
+	if unified {
+		return spot.Total
+	}
+	return perpsAccountValue + spot.Total
 }
 
 // okxBalanceScript is the path to the Python balance fetcher. Exposed as a
@@ -190,37 +245,20 @@ func syncHyperliquidLiveCapital(sc *StrategyConfig) {
 	// Intentionally empty — capital is set from config or resolveCapitalPct.
 }
 
-// fetchHyperliquidState fetches the account value and open positions from the
-// Hyperliquid clearinghouseState endpoint in a single API call.
-func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error) {
-	payload := map[string]string{
+// fetchHyperliquidAccountEquity fetches trading equity and open perps positions.
+func fetchHyperliquidAccountEquity(accountAddress string) (float64, []HLPosition, error) {
+	data, err := hlInfoPost(map[string]string{
 		"type": "clearinghouseState",
 		"user": accountAddress,
-	}
-	body, err := json.Marshal(payload)
+	})
 	if err != nil {
-		return 0, nil, fmt.Errorf("marshal request: %w", err)
-	}
-
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post(hlMainnetURL+"/info", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return 0, nil, fmt.Errorf("http request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, nil, fmt.Errorf("http %d from %s", resp.StatusCode, hlMainnetURL)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, nil, fmt.Errorf("read response: %w", err)
+		return 0, nil, err
 	}
 
 	var result struct {
 		MarginSummary struct {
-			AccountValue string `json:"accountValue"`
+			AccountValue     string `json:"accountValue"`
+			TotalMarginUsed  string `json:"totalMarginUsed"`
 		} `json:"marginSummary"`
 		AssetPositions []struct {
 			Position struct {
@@ -239,10 +277,17 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 		return 0, nil, fmt.Errorf("parse response: %w", err)
 	}
 
-	balance, err := strconv.ParseFloat(result.MarginSummary.AccountValue, 64)
+	perpsValue, err := strconv.ParseFloat(result.MarginSummary.AccountValue, 64)
 	if err != nil {
 		return 0, nil, fmt.Errorf("parse accountValue %q: %w", result.MarginSummary.AccountValue, err)
 	}
+	marginUsed, _ := strconv.ParseFloat(result.MarginSummary.TotalMarginUsed, 64)
+
+	spot, spotErr := fetchHyperliquidSpotUSDC(accountAddress)
+	if spotErr != nil {
+		fmt.Printf("[WARN] hyperliquid spot balance fetch failed: %v — using perps accountValue only\n", spotErr)
+	}
+	balance := computeHyperliquidEquity(perpsValue, marginUsed, spot)
 
 	var positions []HLPosition
 	for _, ap := range result.AssetPositions {
@@ -292,6 +337,11 @@ func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error)
 	}
 
 	return balance, positions, nil
+}
+
+// fetchHyperliquidState fetches trading equity and open positions for a wallet.
+func fetchHyperliquidState(accountAddress string) (float64, []HLPosition, error) {
+	return fetchHyperliquidAccountEquity(accountAddress)
 }
 
 // reconcileHyperliquidPositions applies on-chain position data to a single StrategyState.

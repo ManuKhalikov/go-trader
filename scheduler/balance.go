@@ -47,6 +47,10 @@ func fetchPythonBalance(platform string) (float64, error) {
 
 // resolveCapitalPct fetches wallet balances and updates Capital for strategies
 // that have CapitalPct set. Caches balance per platform to avoid redundant API calls.
+//
+// capital_pct is per-strategy sizing: 1.0 means "use 100% of the live wallet
+// when this strategy trades". Multiple roundtable strategies on one HL account
+// each get the full balance — only one opens at a time.
 func resolveCapitalPct(strategies []StrategyConfig) {
 	// Find platforms that need balance queries.
 	needsBalance := make(map[string]bool)
