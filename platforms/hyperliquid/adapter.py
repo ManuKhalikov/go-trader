@@ -22,6 +22,37 @@ from decimal import Decimal, ROUND_DOWN
 MAINNET_URL = "https://api.hyperliquid.xyz"
 TESTNET_URL = "https://api.hyperliquid-testnet.xyz"
 
+# HIP-3 builder perps on the xyz dex. Strategy config uses bare tickers (SP500);
+# Hyperliquid /info and SDK order calls expect the qualified form (xyz:SP500).
+_HIP3_COINS = frozenset({"SP500", "GOLD", "NVDA", "TSLA", "SPCX"})
+
+
+def resolve_hl_symbol(symbol: str) -> str:
+    """Map config/display tickers to Hyperliquid coin names."""
+    raw = symbol.strip()
+    if ":" in raw:
+        dex, coin = raw.split(":", 1)
+        coin = coin.strip().upper()
+        if coin.endswith("-USDC"):
+            coin = coin[:-5]
+        elif coin.endswith("-USD"):
+            coin = coin[:-4]
+        if coin == "SPX":
+            coin = "SP500"
+        return f"{dex.lower()}:{coin}"
+    s = raw.upper()
+    if "/" in s:
+        s = s.split("/", 1)[0]
+    if s.endswith("-USDC"):
+        s = s[:-5]
+    elif s.endswith("-USD"):
+        s = s[:-4]
+    if s == "SPX":
+        s = "SP500"
+    if s in _HIP3_COINS:
+        return f"xyz:{s}"
+    return s
+
 # /info `spotMeta` + `meta` rarely change (HL lists new coins on the order of
 # weeks). The SDK's Info constructor re-fetches both on every instantiation,
 # which costs 4 /info calls per scheduler cycle (signal-check + sync-protection
@@ -480,6 +511,7 @@ class HyperliquidExchangeAdapter:
         back. A still-missing symbol after refresh logs a warning and uses
         the legacy default 3.
         """
+        symbol = resolve_hl_symbol(symbol)
         if self._info is not None and symbol in self._info.asset_to_sz_decimals:
             return self._info.asset_to_sz_decimals[symbol]
         # Already tried to refresh for this symbol earlier in this subprocess
@@ -520,6 +552,7 @@ class HyperliquidExchangeAdapter:
 
     def get_spot_price(self, symbol: str) -> float:
         """Get current mid price for a coin (e.g. 'BTC')."""
+        symbol = resolve_hl_symbol(symbol)
         mids = self._info.all_mids()
         raw = mids.get(symbol, mids.get(symbol + "-PERP", "0"))
         return float(raw or 0)
@@ -531,6 +564,7 @@ class HyperliquidExchangeAdapter:
         interval: "1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "8h", "12h", "1d"
         Returns list of [timestamp_ms, open, high, low, close, volume].
         """
+        symbol = resolve_hl_symbol(symbol)
         interval_ms_map = {
             "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000,
             "30m": 1_800_000, "1h": 3_600_000, "2h": 7_200_000,
@@ -633,6 +667,7 @@ class HyperliquidExchangeAdapter:
         Returns the raw rate as a float (e.g. 0.0001 = 0.01% per 8h).
         Returns 0.0 if the symbol is not found or on error.
         """
+        symbol = resolve_hl_symbol(symbol)
         try:
             data = self._info.meta_and_asset_ctxs()
             universe = data[0]["universe"]
@@ -653,6 +688,7 @@ class HyperliquidExchangeAdapter:
 
         Returns list of {"rate": float, "time": int} dicts, newest last.
         """
+        symbol = resolve_hl_symbol(symbol)
         try:
             start_time = int(time.time() * 1000) - days * 86400 * 1000
             records = self._info.funding_history(symbol, start_time)
@@ -681,6 +717,7 @@ class HyperliquidExchangeAdapter:
         Returns list of {"rate": float, "time": int} dicts, oldest first,
         de-duplicated on time. Empty list on any API failure.
         """
+        symbol = resolve_hl_symbol(symbol)
         if end_ms is None:
             end_ms = int(time.time() * 1000)
         out = []
@@ -748,6 +785,7 @@ class HyperliquidExchangeAdapter:
         Only available in live mode; raises RuntimeError in paper mode.
         Returns raw SDK response dict.
         """
+        symbol = resolve_hl_symbol(symbol)
         if not self._exchange:
             raise RuntimeError(
                 "market_open requires live mode (set HYPERLIQUID_SECRET_KEY)"
@@ -782,6 +820,7 @@ class HyperliquidExchangeAdapter:
         live mode; raises RuntimeError in paper mode.
         Returns the raw SDK response dict.
         """
+        symbol = resolve_hl_symbol(symbol)
         if not self._exchange:
             raise RuntimeError(
                 "limit_open requires live mode (set HYPERLIQUID_SECRET_KEY)"
@@ -812,6 +851,7 @@ class HyperliquidExchangeAdapter:
         Only available in live mode; raises RuntimeError in paper mode.
         Returns raw SDK response dict.
         """
+        symbol = resolve_hl_symbol(symbol)
         if not self._exchange:
             raise RuntimeError(
                 "market_close requires live mode (set HYPERLIQUID_SECRET_KEY)"
@@ -989,6 +1029,7 @@ class HyperliquidExchangeAdapter:
         The scheduler detects this via isHLOpenOrderCapRejection and escalates
         to CRITICAL + notifier — no proactive client-side counter is required.
         """
+        symbol = resolve_hl_symbol(symbol)
         if not self._exchange:
             raise RuntimeError(
                 "place_stop_loss requires live mode (set HYPERLIQUID_SECRET_KEY)"
@@ -1026,6 +1067,7 @@ class HyperliquidExchangeAdapter:
         is_buy: bool,
     ) -> dict:
         """Place a reduce-only take-profit limit order (#601)."""
+        symbol = resolve_hl_symbol(symbol)
         if not self._exchange:
             raise RuntimeError(
                 "place_take_profit_limit requires live mode (set HYPERLIQUID_SECRET_KEY)"
@@ -1136,6 +1178,7 @@ class HyperliquidExchangeAdapter:
         limits placed via place_take_profit_limit) are both cancellable
         through this single primitive (#604 review #4).
         """
+        symbol = resolve_hl_symbol(symbol)
         if not self._exchange:
             raise RuntimeError(
                 "cancel_order_by_oid requires live mode (set HYPERLIQUID_SECRET_KEY)"

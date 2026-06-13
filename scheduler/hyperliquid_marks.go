@@ -29,7 +29,42 @@ func fetchHyperliquidMids(coins []string) (map[string]float64, error) {
 		return map[string]float64{}, nil
 	}
 
-	payload := map[string]string{"type": "allMids"}
+	var mainCoins, hip3Coins []string
+	for _, c := range coins {
+		bare := normalizeHlCoin(c)
+		if hlHIP3Coins[bare] {
+			hip3Coins = append(hip3Coins, bare)
+		} else {
+			mainCoins = append(mainCoins, bare)
+		}
+	}
+
+	marks := make(map[string]float64, len(coins))
+
+	if len(mainCoins) > 0 {
+		mainMarks, err := fetchHyperliquidMidsPayload(map[string]string{"type": "allMids"}, mainCoins)
+		if err != nil {
+			return nil, err
+		}
+		for coin, px := range mainMarks {
+			marks[coin] = px
+		}
+	}
+
+	if len(hip3Coins) > 0 {
+		hip3Marks, err := fetchHyperliquidMidsPayload(map[string]string{"type": "allMids", "dex": "xyz"}, hip3Coins)
+		if err != nil {
+			return nil, err
+		}
+		for coin, px := range hip3Marks {
+			marks[coin] = px
+		}
+	}
+
+	return marks, nil
+}
+
+func fetchHyperliquidMidsPayload(payload map[string]string, coins []string) (map[string]float64, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal allMids request: %w", err)
@@ -51,7 +86,6 @@ func fetchHyperliquidMids(coins []string) (map[string]float64, error) {
 		return nil, fmt.Errorf("read allMids response: %w", err)
 	}
 
-	// Flat object: {"BTC": "67500.50", "ETH": "3200.10", ...}
 	var raw map[string]string
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parse allMids response: %w", err)
@@ -59,19 +93,20 @@ func fetchHyperliquidMids(coins []string) (map[string]float64, error) {
 
 	want := make(map[string]bool, len(coins))
 	for _, c := range coins {
-		want[c] = true
+		want[normalizeHlCoin(c)] = true
 	}
 
 	marks := make(map[string]float64, len(coins))
 	for coin, priceStr := range raw {
-		if !want[coin] {
+		bare := normalizeHlCoin(coin)
+		if !want[bare] {
 			continue
 		}
 		p, err := strconv.ParseFloat(priceStr, 64)
 		if err != nil || p <= 0 {
 			continue
 		}
-		marks[coin] = p
+		marks[bare] = p
 	}
 	return marks, nil
 }

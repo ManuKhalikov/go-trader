@@ -116,6 +116,11 @@ class TestMarketData:
         mock_info.all_mids.return_value = {"BTC-PERP": "67000.00"}
         assert adapter.get_spot_price("BTC") == 67000.00
 
+    def test_get_spot_price_hip3_resolves_xyz_prefix(self):
+        adapter, mock_info = self._make_adapter()
+        mock_info.all_mids.return_value = {"xyz:SP500": "5800.0"}
+        assert adapter.get_spot_price("SP500") == 5800.0
+
     def test_get_spot_price_not_found(self):
         adapter, mock_info = self._make_adapter()
         mock_info.all_mids.return_value = {}
@@ -873,3 +878,20 @@ class TestFundingHistoryRange:
         adapter = self._adapter(mock_info)
         out = adapter.get_funding_history_range("BTC", base, base + 100 * self._HOUR)
         assert len(out) == 5
+
+
+class TestResolveHlSymbol:
+    def test_main_dex_unchanged(self):
+        mod = _load_hl_adapter()
+        assert mod.resolve_hl_symbol("BTC") == "BTC"
+        assert mod.resolve_hl_symbol("HYPE") == "HYPE"
+
+    def test_hip3_gets_xyz_prefix(self):
+        mod = _load_hl_adapter()
+        assert mod.resolve_hl_symbol("SP500") == "xyz:SP500"
+        assert mod.resolve_hl_symbol("GOLD") == "xyz:GOLD"
+        assert mod.resolve_hl_symbol("xyz:NVDA") == "xyz:NVDA"
+
+    def test_spx_alias(self):
+        mod = _load_hl_adapter()
+        assert mod.resolve_hl_symbol("SPX") == "xyz:SP500"

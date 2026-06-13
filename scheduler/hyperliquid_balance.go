@@ -427,7 +427,7 @@ func fetchHyperliquidAccountEquity(accountAddress string) (float64, []HLPosition
 			}
 		}
 		positions = append(positions, HLPosition{
-			Coin:          ap.Position.Coin,
+			Coin:          normalizeHlCoin(ap.Position.Coin),
 			Size:          szi,
 			EntryPrice:    entryPx,
 			Leverage:      lev,
