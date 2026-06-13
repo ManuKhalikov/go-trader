@@ -740,11 +740,10 @@ func dedupedSameAccountLiveManualIDs(strategies []StrategyConfig) map[string]boo
 	return out
 }
 
-// riskPathWalletMemberIDs returns perps shared-wallet members plus same-account
-// live HL manual strategies in subset. detectSharedWallets is perps-only, but
-// a live manual on the same HYPERLIQUID_ACCOUNT_ADDRESS is already inside the
-// wallet real balance — exclude its modeled PortfolioValue from the risk-path
-// per-strategy sum when the wallet balance is contributed (#921).
+// riskPathWalletMemberIDs returns shared-wallet members for risk math, folding
+// in same-account live HL manual strategies when the wallet was detected via
+// perps only (legacy mixed setups). Manual-only roundtable configs are grouped
+// directly by detectSharedWallets (#921).
 func riskPathWalletMemberIDs(key SharedWalletKey, perpsMemberIDs []string, subset []StrategyConfig) []string {
 	members := append([]string(nil), perpsMemberIDs...)
 	seen := make(map[string]bool, len(members))

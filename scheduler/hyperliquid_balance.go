@@ -237,12 +237,112 @@ func defaultSharedWalletBalance(platform string) (float64, error) {
 	return 0, fmt.Errorf("no shared-wallet balance fetcher for platform %q", platform)
 }
 
-// syncHyperliquidLiveCapital is a no-op kept for backward compatibility.
-// Capital is now managed per-strategy via config (Capital field) or capital_pct.
-// With multiple strategies on one account, overriding each strategy's capital
-// with the full wallet balance would double-count funds.
+// syncHyperliquidLiveCapitals fetches the live HL wallet once and refreshes
+// Capital for every live perps/manual strategy. Flat strategies also get Cash
+// rebased so display and sizing track deposits/withdrawals (unified-account
+// spot USDC included).
+func syncHyperliquidLiveCapitals(strategies []StrategyConfig, state *AppState) {
+	addr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
+	if addr == "" {
+		return
+	}
+
+	var targets []*StrategyConfig
+	for i := range strategies {
+		sc := &strategies[i]
+		if sc.Platform != "hyperliquid" {
+			continue
+		}
+		if sc.Type != "perps" && sc.Type != "manual" {
+			continue
+		}
+		if !hyperliquidIsLive(sc.Args) {
+			continue
+		}
+		targets = append(targets, sc)
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	bal, err := fetchHyperliquidBalance(addr)
+	if err != nil {
+		fmt.Printf("[WARN] hyperliquid live capital sync: %v\n", err)
+		return
+	}
+	if bal <= 0 {
+		return
+	}
+
+	for _, sc := range targets {
+		want := bal
+		if sc.CapitalPct > 0 {
+			want = bal * sc.CapitalPct
+		}
+		if sc.Capital != want {
+			fmt.Printf("[INFO] %s: synced capital $%.2f → $%.2f (live HL balance)\n", sc.ID, sc.Capital, want)
+			sc.Capital = want
+		}
+		if state == nil {
+			continue
+		}
+		syncHyperliquidLiveStrategyCash(*sc, state.Strategies[sc.ID])
+	}
+}
+
+// syncHyperliquidLiveStrategyCash rebases modeled Cash to Capital when the
+// strategy is flat. Open positions keep their virtual book intact.
+func syncHyperliquidLiveStrategyCash(sc StrategyConfig, ss *StrategyState) {
+	if ss == nil || sc.Capital <= 0 {
+		return
+	}
+	if !strategyStateIsFlat(ss) {
+		return
+	}
+	if math.Abs(ss.Cash-sc.Capital) > 0.001 {
+		ss.Cash = sc.Capital
+	}
+}
+
+func strategyStateIsFlat(ss *StrategyState) bool {
+	for _, p := range ss.Positions {
+		if p != nil && p.Quantity != 0 {
+			return false
+		}
+	}
+	for _, p := range ss.OptionPositions {
+		if p != nil && p.Quantity != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// syncHyperliquidLiveStrategyCashAll rebases flat Cash from already-resolved Capital.
+func syncHyperliquidLiveStrategyCashAll(strategies []StrategyConfig, state *AppState) {
+	if state == nil {
+		return
+	}
+	for _, sc := range strategies {
+		if sc.Platform != "hyperliquid" {
+			continue
+		}
+		if sc.Type != "perps" && sc.Type != "manual" {
+			continue
+		}
+		if !hyperliquidIsLive(sc.Args) {
+			continue
+		}
+		syncHyperliquidLiveStrategyCash(sc, state.Strategies[sc.ID])
+	}
+}
+
+// syncHyperliquidLiveCapital is kept for callers that update a single strategy.
 func syncHyperliquidLiveCapital(sc *StrategyConfig) {
-	// Intentionally empty — capital is set from config or resolveCapitalPct.
+	if sc == nil {
+		return
+	}
+	syncHyperliquidLiveCapitals([]StrategyConfig{*sc}, nil)
 }
 
 // fetchHyperliquidAccountEquity fetches trading equity and open perps positions.

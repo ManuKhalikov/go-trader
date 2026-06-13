@@ -137,8 +137,10 @@ func main() {
 	}
 	ValidateState(state)
 
-	// #87: Resolve capital_pct at startup so initial state gets the right capital.
+	// #87: Resolve capital_pct → capital for strategies with dynamic sizing.
 	resolveCapitalPct(cfg.Strategies)
+	// Refresh HL live capital + flat Cash from the real wallet (unified spot USDC).
+	syncHyperliquidLiveCapitals(cfg.Strategies, state)
 
 	// #343: Reconcile any operator-driven initial_capital changes from config
 	// against the persisted baseline. Without this, the SaveState guard would
@@ -150,10 +152,6 @@ func main() {
 	// Initialize new strategies and sync config values for existing ones
 	for i := range cfg.Strategies {
 		sc := &cfg.Strategies[i]
-		// For live Hyperliquid strategies without capital_pct, override capital with the real wallet balance.
-		if sc.CapitalPct == 0 {
-			syncHyperliquidLiveCapital(sc)
-		}
 		if s, exists := state.Strategies[sc.ID]; !exists {
 			state.Strategies[sc.ID] = NewStrategyState(*sc)
 			fmt.Printf("  Initialized strategy: %s (type=%s, capital=$%.0f)\n", sc.ID, sc.Type, sc.Capital)
@@ -221,16 +219,16 @@ func main() {
 	// once the notifier is wired below.
 	directionConfigWarnings := ValidatePerpsDirectionConfig(state, cfg)
 
-	// #42 / #243: Initialize portfolio peak from sum of capitals on first run.
-	// For strategies that share an exchange wallet (e.g. multiple Hyperliquid
-	// perps strategies on the same account), use the real on-exchange balance
-	// once instead of summing per-strategy capital — otherwise the peak is
-	// inflated and the kill switch can fire prematurely.
+	// #42 / #243: Initialize or heal portfolio peak for shared-wallet setups.
 	if state.PortfolioRisk.PeakValue == 0 {
-		total := computeInitialPortfolioPeak(cfg.Strategies, nil)
-		state.PortfolioRisk.PeakValue = total
-		fmt.Printf("  Portfolio peak initialized: $%.0f\n", total)
+		if total := computeInitialPortfolioPeak(cfg.Strategies, nil); total > 0 {
+			state.PortfolioRisk.PeakValue = total
+			fmt.Printf("  Portfolio peak initialized: $%.2f\n", total)
+		}
+	} else {
+		rebaselineSharedWalletPeakIfInflated(state, cfg.Strategies, nil)
 	}
+	rebaselineFlatStrategyPeaksIfInflated(cfg.Strategies, state)
 
 	// #244: A latched portfolio kill switch should not survive a restart
 	// indefinitely on shared-wallet setups. If the real on-chain balance is
@@ -599,10 +597,13 @@ func main() {
 			sendTradeAlerts(ma.sc, ma.ss, ma.trades, &mu, notifier)
 		}
 
-		// #87: Resolve capital_pct → capital for strategies with dynamic sizing.
+		// #87: Resolve capital_pct → capital; rebase flat HL Cash from live balance.
 		// Must run on cfg.Strategies (not dueStrategies) so resolved capital persists
-		// across cycles and is picked up by the value-copies in dueStrategies.
+		// across cycles. State mutations run under mu — /status reads the same fields.
 		resolveCapitalPct(cfg.Strategies)
+		mu.Lock()
+		syncHyperliquidLiveStrategyCashAll(cfg.Strategies, state)
+		mu.Unlock()
 
 		// Compute effective per-strategy intervals once per cycle under
 		// RLock; reuse the same map for due-detection and schedulerDelay
@@ -887,10 +888,9 @@ func main() {
 			// walletBalances is declared at cycle scope (above) and populated here.
 			var hlPositions []HLPosition
 			var hlStateFetched bool
-			// Fetch clearinghouseState whenever any live HL strategy exists (#356
-			// per-strategy circuit closes need fresh positions even if no HL
-			// strategy is due this cycle).
-			if hlAddr != "" && len(hlLiveAll) > 0 {
+			// Fetch clearinghouseState whenever any live HL perps or manual strategy
+			// exists (#356 per-strategy circuit closes; #918 shared-wallet display).
+			if hlAddr != "" && (len(hlLiveAll) > 0 || len(hlReconcileAll) > 0) {
 				bal, pos, err := fetchHyperliquidState(hlAddr)
 				if err != nil {
 					fmt.Printf("[WARN] hyperliquid clearinghouseState fetch failed: %v — falling back to per-wallet max and skipping position sync this cycle\n", err)

@@ -41,6 +41,8 @@ var walletKeyRegistry = []struct {
 }{
 	// Hyperliquid perps live — original entry, trades from HYPERLIQUID_ACCOUNT_ADDRESS.
 	{platform: "hyperliquid", instrument: "perps", liveFn: hyperliquidIsLive, envVar: "HYPERLIQUID_ACCOUNT_ADDRESS"},
+	// Hyperliquid manual live — roundtable / agent-driven opens on the same wallet.
+	{platform: "hyperliquid", instrument: "manual", liveFn: hyperliquidIsLive, envVar: "HYPERLIQUID_ACCOUNT_ADDRESS"},
 	// OKX perps (swap) live — multi-strategy on one API key share the same
 	// margin account; OKX_API_KEY uniquely identifies the account (#357 phase 1a).
 	{platform: "okx", instrument: "perps", liveFn: okxIsLive, envVar: "OKX_API_KEY"},
@@ -369,6 +371,45 @@ func computeInitialPortfolioPeak(strategies []StrategyConfig, fetcher WalletBala
 		total += bal
 	}
 	return total
+}
+
+// rebaselineSharedWalletPeakIfInflated lowers PortfolioRisk.PeakValue when it
+// still reflects legacy per-strategy double-counting on a shared wallet (e.g.
+// peak ≈ N × live balance after manual strategies were not grouped). Only runs
+// when a live balance fetch succeeds and the stored peak is >1.5× the correct
+// total so legitimate drawdowns from a higher equity are preserved.
+func rebaselineSharedWalletPeakIfInflated(state *AppState, strategies []StrategyConfig, fetcher WalletBalanceFetcher) {
+	if state == nil || state.PortfolioRisk.PeakValue <= 0 {
+		return
+	}
+	if len(detectSharedWallets(strategies)) == 0 {
+		return
+	}
+	corrected := computeInitialPortfolioPeak(strategies, fetcher)
+	if corrected <= 0 || state.PortfolioRisk.PeakValue <= corrected*1.5 {
+		return
+	}
+	fmt.Printf("  Portfolio peak rebaselined: $%.2f → $%.2f (shared-wallet double-count heal)\n",
+		state.PortfolioRisk.PeakValue, corrected)
+	state.PortfolioRisk.PeakValue = corrected
+	state.PortfolioRisk.CurrentDrawdownPct = 0
+}
+
+// rebaselineFlatStrategyPeaksIfInflated aligns per-strategy PeakValue with live
+// Capital when flat and the stored peak looks like a legacy double-count.
+func rebaselineFlatStrategyPeaksIfInflated(strategies []StrategyConfig, state *AppState) {
+	if state == nil {
+		return
+	}
+	for _, sc := range strategies {
+		ss := state.Strategies[sc.ID]
+		if ss == nil || sc.Capital <= 0 || !strategyStateIsFlat(ss) {
+			continue
+		}
+		if ss.RiskState.PeakValue > sc.Capital*1.5 {
+			ss.RiskState.PeakValue = sc.Capital
+		}
+	}
 }
 
 // rebaselinePortfolioPeakAfterPrune recomputes PortfolioRisk.PeakValue from the

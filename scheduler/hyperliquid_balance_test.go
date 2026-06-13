@@ -16,17 +16,56 @@ import (
 
 // Tests in this file mutate package-level hlMainnetURL and must NOT use t.Parallel().
 
-func TestSyncHyperliquidLiveCapitalIsNoOp(t *testing.T) {
+func TestSyncHyperliquidLiveCapital_SkipsPaper(t *testing.T) {
 	sc := &StrategyConfig{
 		ID:       "hl-btc",
 		Platform: "hyperliquid",
+		Type:     "perps",
 		Capital:  1000,
-		Args:     []string{"sma", "BTC", "1h", "--mode=live"},
+		Args:     []string{"sma", "BTC", "1h", "--mode=paper"},
 	}
-	original := sc.Capital
 	syncHyperliquidLiveCapital(sc)
-	if sc.Capital != original {
-		t.Errorf("capital should not change (no-op), got %g", sc.Capital)
+	if sc.Capital != 1000 {
+		t.Errorf("paper mode should not sync capital, got %g", sc.Capital)
+	}
+}
+
+func TestSyncHyperliquidLiveCapital_SyncsManualLive(t *testing.T) {
+	origAddr := os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS")
+	os.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xabc")
+	defer os.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", origAddr)
+
+	perpsResp := map[string]interface{}{
+		"marginSummary": map[string]string{"accountValue": "0", "totalMarginUsed": "0"},
+		"assetPositions": []interface{}{},
+	}
+	spotResp := map[string]interface{}{
+		"balances": []map[string]string{{"coin": "USDC", "total": "89.22", "hold": "0"}},
+		"tokenToAvailableAfterMaintenance": [][]interface{}{{0, "89.22"}},
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]string
+		json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		if req["type"] == "spotClearinghouseState" {
+			json.NewEncoder(w).Encode(spotResp)
+			return
+		}
+		json.NewEncoder(w).Encode(perpsResp)
+	}))
+	defer ts.Close()
+
+	origURL := hlMainnetURL
+	hlMainnetURL = ts.URL
+	defer func() { hlMainnetURL = origURL }()
+
+	sc := &StrategyConfig{
+		ID: "hl-roundtable", Platform: "hyperliquid", Type: "manual",
+		Capital: 90, Args: []string{"hold", "BTC", "4h", "--mode=live"},
+	}
+	syncHyperliquidLiveCapital(sc)
+	if math.Abs(sc.Capital-89.22) > 0.01 {
+		t.Errorf("capital = %g, want 89.22", sc.Capital)
 	}
 }
 

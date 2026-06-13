@@ -42,6 +42,27 @@ func TestDetectSharedWallets_MultipleHLPerps(t *testing.T) {
 	}
 }
 
+// TestDetectSharedWallets_MultipleHLManual verifies roundtable manual strategies
+// on the same account are detected as one shared wallet.
+func TestDetectSharedWallets_MultipleHLManual(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
+
+	strategies := []StrategyConfig{
+		{ID: "hl-roundtable", Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "4h", "--mode=live"}, Capital: 90},
+		{ID: "hl-roundtable-eth", Platform: "hyperliquid", Type: "manual", Symbol: "ETH", Args: []string{"hold", "ETH", "4h", "--mode=live"}, Capital: 90},
+	}
+
+	shared := detectSharedWallets(strategies)
+	if len(shared) != 1 {
+		t.Fatalf("expected 1 shared wallet; got %d", len(shared))
+	}
+	for _, ids := range shared {
+		if len(ids) != 2 {
+			t.Errorf("expected 2 manual strategies in wallet; got %d", len(ids))
+		}
+	}
+}
+
 // TestDetectSharedWallets_PaperModeIgnored verifies that paper-mode HL strategies
 // are not treated as shared (they don't actually touch a real account).
 func TestDetectSharedWallets_PaperModeIgnored(t *testing.T) {
@@ -638,6 +659,27 @@ func TestComputeInitialPortfolioPeak_LegacyCapitalPct(t *testing.T) {
 	want := 6000.0 // 5000 (derived wallet via legacy) + 1000 (fixed capital)
 	if got != want {
 		t.Errorf("expected legacy capital_pct peak=%v; got %v", want, got)
+	}
+}
+
+func TestRebaselineSharedWalletPeakIfInflated(t *testing.T) {
+	t.Setenv("HYPERLIQUID_ACCOUNT_ADDRESS", "0xtest")
+	strategies := []StrategyConfig{
+		{ID: "hl-a", Platform: "hyperliquid", Type: "manual", Symbol: "BTC", Args: []string{"hold", "BTC", "4h", "--mode=live"}, Capital: 89.22},
+		{ID: "hl-b", Platform: "hyperliquid", Type: "manual", Symbol: "ETH", Args: []string{"hold", "ETH", "4h", "--mode=live"}, Capital: 89.22},
+	}
+	key := SharedWalletKey{Platform: "hyperliquid", Account: "0xtest"}
+	fetcher := stubFetcher(map[SharedWalletKey]float64{key: 89.22}, nil)
+
+	state := &AppState{
+		PortfolioRisk: PortfolioRiskState{PeakValue: 718, CurrentDrawdownPct: 87},
+	}
+	rebaselineSharedWalletPeakIfInflated(state, strategies, fetcher)
+	if state.PortfolioRisk.PeakValue != 89.22 {
+		t.Errorf("peak = %v, want 89.22", state.PortfolioRisk.PeakValue)
+	}
+	if state.PortfolioRisk.CurrentDrawdownPct != 0 {
+		t.Errorf("drawdown should reset, got %v", state.PortfolioRisk.CurrentDrawdownPct)
 	}
 }
 
