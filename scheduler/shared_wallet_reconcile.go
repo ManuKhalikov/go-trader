@@ -193,10 +193,9 @@ func reconcileSharedWalletMemberValues(
 // and no modeled virtual positions — the roundtable pattern where strategies
 // take turns using the full pool but only one is live at a time.
 func sharedWalletIsFlat(positions []SharedWalletPosition, virtualQty map[string]map[string]float64) bool {
-	for _, p := range positions {
-		if p.Size != 0 {
-			return false
-		}
+	// Positions with zero size are filtered before this slice is built.
+	if len(positions) > 0 {
+		return false
 	}
 	for _, byMember := range virtualQty {
 		for _, qty := range byMember {
