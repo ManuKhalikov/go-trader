@@ -791,6 +791,53 @@ class TestSyncProtection:
                 )
         return json.loads(captured.getvalue()), mock_adapter
 
+    def test_adopts_existing_sl_when_state_oid_zero(self):
+        """StopLossOID=0 but a resting SL exists → adopt it, do not place another."""
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.open_order_oids.return_value = {5555, 4444, 3333}
+        mock_adapter.find_resting_stop_loss_orders.return_value = [
+            (5555, 62649.0),
+            (4444, 62649.0),
+            (3333, 62649.0),
+        ]
+        mock_adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 4)
+        mock_adapter.round_size.side_effect = lambda _sym, sz: round(sz, 3)
+        mock_adapter.floor_size.side_effect = lambda _sym, sz: math.floor(sz * 1000) / 1000
+
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake_mod = MagicMock()
+                fake_mod.HyperliquidExchangeAdapter = mock_adapter_cls
+                return fake_mod
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                mod.run_sync_protection(
+                    "BTC",
+                    "long",
+                    0.002,
+                    64000.0,
+                    500.0,
+                    "live",
+                    stop_loss_atr_mult=2.0,
+                    stop_loss_oid=0,
+                )
+        out = json.loads(captured.getvalue())
+        assert out["stop_loss_oid"] == 5555
+        assert out.get("stop_loss_adopted_existing") is True
+        mock_adapter.place_stop_loss.assert_not_called()
+        mock_adapter.cancel_order_by_oid.assert_any_call("BTC", 4444)
+        mock_adapter.cancel_order_by_oid.assert_any_call("BTC", 3333)
+
     def test_sl_skips_force_replace_when_size_zero(self):
         """#843: dust cycle echoes resting SL instead of place_stop_loss(0)."""
         out, adapter = self._run_sync(

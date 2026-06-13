@@ -609,6 +609,27 @@ def run_sync_protection(
             out["tp_cancel_filled_oids"] = surplus_cancel_filled
 
         if stop_loss_atr_mult > 0:
+            # State may have StopLossOID=0 even when a resting SL exists on HL
+            # (e.g. manual UI placement or a prior cycle that placed but failed to
+            # persist the OID). Adopt the newest resting SL instead of stacking
+            # duplicates every scheduler interval (#manual-open duplicate SL).
+            if stop_loss_oid <= 0 and open_oids is not None:
+                resting_sls = adapter.find_resting_stop_loss_orders(symbol, side)
+                if resting_sls:
+                    adopted_oid, adopted_px = resting_sls[0]
+                    stop_loss_oid = adopted_oid
+                    out["stop_loss_adopted_existing"] = True
+                    if adopted_px > 0:
+                        out["stop_loss_trigger_px"] = adopted_px
+                    for dup_oid, _ in resting_sls[1:]:
+                        try:
+                            adapter.cancel_order_by_oid(symbol, dup_oid)
+                        except Exception as ce:
+                            print(
+                                f"[WARN] cancel duplicate SL OID={dup_oid} failed: {ce}",
+                                file=sys.stderr,
+                            )
+
             # HL's open-order indexer can lag immediately after placement; re-fetch
             # before treating a known SL OID as missing/cancelled (#manual-open dup SL).
             if stop_loss_oid > 0 and not _oid_is_open(open_oids, stop_loss_oid):

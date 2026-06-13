@@ -600,6 +600,32 @@ class TestStopLossPlacement:
         ]
         assert adapter.open_order_oids("ETH") == {111, 333}
 
+    def test_find_resting_stop_loss_orders_filters_side(self):
+        adapter, _, _ = self._live_adapter()
+        adapter._account_address = "0xabc"
+        adapter._info.open_orders.return_value = [
+            {
+                "coin": "BTC",
+                "oid": 100,
+                "side": "A",
+                "reduceOnly": True,
+                "isTrigger": True,
+                "triggerPx": "62649",
+                "orderType": "Stop Market",
+            },
+            {
+                "coin": "BTC",
+                "oid": 200,
+                "side": "B",
+                "reduceOnly": True,
+                "isTrigger": True,
+                "triggerPx": "70000",
+                "orderType": "Stop Market",
+            },
+        ]
+        assert adapter.find_resting_stop_loss_orders("BTC", "long") == [(100, 62649.0)]
+        assert adapter.find_resting_stop_loss_orders("BTC", "short") == [(200, 70000.0)]
+
 
 # ─── userFills Lookup (#585) ──────────────────────────
 

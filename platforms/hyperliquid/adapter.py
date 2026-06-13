@@ -1060,6 +1060,50 @@ class HyperliquidExchangeAdapter:
         sz_decimals = self._sz_decimals(symbol) if self._info else 3
         return round(sz, sz_decimals)
 
+    def find_resting_stop_loss_orders(
+        self, symbol: str, position_side: str
+    ) -> list[tuple[int, float]]:
+        """Return resting reduce-only stop-loss triggers for an open position.
+
+        Sorted newest-first by OID so callers can adopt the latest SL and
+        cancel older duplicates. Empty when none are found or when live
+        credentials are unavailable.
+        """
+        if not self._account_address:
+            return []
+        side = str(position_side or "").lower()
+        if side not in ("long", "short"):
+            return []
+        # Long SL closes with a sell (Ask); short SL closes with a buy (Bid).
+        want_side = "A" if side == "long" else "B"
+        orders = self._info.open_orders(self._account_address) or []
+        found: list[tuple[int, float]] = []
+        for order in orders:
+            if not isinstance(order, dict):
+                continue
+            if order.get("coin") != symbol:
+                continue
+            if not order.get("reduceOnly", False):
+                continue
+            if str(order.get("side", "")).upper() != want_side:
+                continue
+            order_type = str(order.get("orderType", ""))
+            trigger_cond = str(order.get("triggerCondition", ""))
+            is_sl = (
+                order.get("isTrigger", False)
+                or "Stop" in order_type
+                or "stop" in trigger_cond.lower()
+            )
+            if not is_sl:
+                continue
+            oid = _safe_int(order.get("oid"))
+            if oid <= 0:
+                continue
+            trigger_px = _safe_float(order.get("triggerPx"))
+            found.append((oid, trigger_px))
+        found.sort(key=lambda item: item[0], reverse=True)
+        return found
+
     def open_order_oids(self, symbol: str | None = None) -> set[int]:
         """Return currently open order OIDs, optionally filtered by coin (#601).
 
