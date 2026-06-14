@@ -38,6 +38,8 @@ func runManualOpen(args []string) int {
 	expireAfter := fs.Duration("expire-after", 0, "Auto-cancel a resting --limit-price order after this duration (e.g. 2h, 30m); 0 = GTC, no expiry")
 	recordOnly := fs.Bool("record-only", false, "Register an existing fill without placing a new on-chain order")
 	dryRun := fs.Bool("dry-run", false, "Print planned action without placing order or mutating state")
+	signalID := fs.String("signal-id", "", "Roundtable agent signal id (audit trail)")
+	clientOrderID := fs.String("client-order-id", "", "Roundtable agent idempotency key (audit trail)")
 
 	// #711: stdlib flag.Parse stops at the first positional arg, so the
 	// documented `manual-open <strategy-id> --flag value` form fails to parse
@@ -53,6 +55,10 @@ func runManualOpen(args []string) int {
 		return 2
 	}
 	strategyID := fs.Arg(0)
+
+	if *signalID != "" || *clientOrderID != "" {
+		fmt.Fprintf(os.Stderr, "[manual-open] signal_id=%s client_order_id=%s\n", *signalID, *clientOrderID)
+	}
 
 	cfg, err := LoadConfig(*configPath)
 	if err != nil {

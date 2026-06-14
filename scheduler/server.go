@@ -46,6 +46,9 @@ type StatusServer struct {
 	lastFuturesModeLoggedAt time.Time
 	lastHLPerpsErrLoggedAt  time.Time
 	lastOKXPerpsErrLoggedAt time.Time
+
+	manualOpenMu  sync.Mutex
+	manualOpenIds map[string]bool
 }
 
 // perpsErrLogInterval caps how often /status logs repeated mark-fetch
@@ -199,6 +202,7 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/api/strategies/", ss.handleAPIStrategy)
 	mux.HandleFunc("/manual-open", ss.handleManualOpenHTTP)
 	mux.HandleFunc("/manual-close", ss.handleManualCloseHTTP)
+	mux.HandleFunc("/emergency-close", ss.handleEmergencyCloseHTTP)
 
 	listener, boundPort, err := bindWithFallback(port, statusPortMaxAttempts)
 	if err != nil {

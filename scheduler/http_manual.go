@@ -11,11 +11,14 @@ import (
 )
 
 type manualOpenBody struct {
-	StrategyID string  `json:"strategy_id"`
-	Side       string  `json:"side"`
-	Notional   float64 `json:"notional"`
-	Symbol     string  `json:"symbol"`
-	FillPrice  float64 `json:"fill_price,omitempty"`
+	StrategyID     string  `json:"strategy_id"`
+	Side           string  `json:"side"`
+	Notional       float64 `json:"notional"`
+	Symbol         string  `json:"symbol"`
+	FillPrice      float64 `json:"fill_price,omitempty"`
+	SignalID       string  `json:"signal_id,omitempty"`
+	ClientOrderID  string  `json:"client_order_id,omitempty"`
+	ExpiresAt      string  `json:"expires_at,omitempty"`
 }
 
 type manualCloseBody struct {
@@ -91,6 +94,16 @@ func (ss *StatusServer) handleManualOpenHTTP(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	if body.ClientOrderID != "" && ss.isDuplicateManualOpen(body.ClientOrderID) {
+		json.NewEncoder(w).Encode(map[string]string{
+			"status":     "ok",
+			"duplicate":  "true",
+			"signal_id":  body.SignalID,
+			"strategy_id": body.StrategyID,
+		})
+		return
+	}
+
 	args := []string{
 		body.StrategyID,
 		"--side", body.Side,
@@ -100,6 +113,12 @@ func (ss *StatusServer) handleManualOpenHTTP(w http.ResponseWriter, r *http.Requ
 	}
 	if body.FillPrice > 0 {
 		args = append(args, "--fill-price", strconv.FormatFloat(body.FillPrice, 'f', -1, 64))
+	}
+	if body.SignalID != "" {
+		args = append(args, "--signal-id", body.SignalID)
+	}
+	if body.ClientOrderID != "" {
+		args = append(args, "--client-order-id", body.ClientOrderID)
 	}
 
 	code, stderr := runManualOpenCapture(args)
@@ -120,7 +139,45 @@ func (ss *StatusServer) handleManualOpenHTTP(w http.ResponseWriter, r *http.Requ
 		"status":      "ok",
 		"strategy_id": body.StrategyID,
 		"symbol":      body.Symbol,
+		"signal_id":   body.SignalID,
 	})
+}
+
+func (ss *StatusServer) isDuplicateManualOpen(clientOrderID string) bool {
+	ss.manualOpenMu.Lock()
+	defer ss.manualOpenMu.Unlock()
+	if ss.manualOpenIds == nil {
+		ss.manualOpenIds = make(map[string]bool)
+	}
+	if ss.manualOpenIds[clientOrderID] {
+		return true
+	}
+	ss.manualOpenIds[clientOrderID] = true
+	return false
+}
+
+func (ss *StatusServer) handleEmergencyCloseHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !ss.requireManualAuth(w, r) {
+		return
+	}
+	var body manualCloseBody
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	args := []string{"--config", ss.configPathForManual()}
+	if sym := strings.ToUpper(strings.TrimSpace(body.Symbol)); sym != "" {
+		args = append(args, "--symbol", sym)
+	}
+	code, stderr := runManualCloseCapture(append([]string{"hl-roundtable"}, args...))
+	w.Header().Set("Content-Type", "application/json")
+	if code != 0 {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]any{"error": "emergency-close failed", "detail": strings.TrimSpace(stderr)})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
 func (ss *StatusServer) handleManualCloseHTTP(w http.ResponseWriter, r *http.Request) {
