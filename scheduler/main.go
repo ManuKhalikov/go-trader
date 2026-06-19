@@ -1995,6 +1995,34 @@ func main() {
 						// trail no-op'd for one interval; stamping first arms it
 						// correctly on cycle 1.
 						closeFraction, _, manualOK := runManualCloseEval(sc, stratState, cfg, notifier, logger)
+
+						// Intraday time-based force-close: if the position has been open
+						// longer than maxManualHoldDuration, override the close-evaluator
+						// output and force a full close this cycle. This is intentionally
+						// NOT suppressed by closeStrategiesSuppressedByOnChainProtection
+						// — that suppression only gates the Python close evaluator above.
+						// Here we override the (closeFraction, manualOK) locals that the
+						// execute block below consumes; on-chain TP orders are cancelled
+						// automatically because intentFullClose=true triggers the existing
+						// cancelOID + extraCancelOIDs path (~line 2089).
+						const maxManualHoldDuration = 4 * time.Hour
+						mu.RLock()
+						posForTimeCheck := stratState.Positions[sc.Symbol]
+						var posAge time.Duration
+						if posForTimeCheck != nil && !posForTimeCheck.OpenedAt.IsZero() {
+							posAge = time.Since(posForTimeCheck.OpenedAt)
+						}
+						mu.RUnlock()
+						if posForTimeCheck != nil && posAge >= maxManualHoldDuration {
+							logger.Warn("time-close: %s/%s open %.1fh >= %.0fh intraday limit — overriding close eval (was: closeFraction=%g manualOK=%v)",
+								sc.ID, sc.Symbol, posAge.Hours(), maxManualHoldDuration.Hours(), closeFraction, manualOK)
+							notifier.SendOwnerDM(fmt.Sprintf(
+								"**[TIME-CLOSE]** %s %s: position open %.1fh ≥ %.0fh intraday limit — forcing full close (SL/TP orders will be cancelled)",
+								sc.ID, sc.Symbol, posAge.Hours(), maxManualHoldDuration.Hours()))
+							closeFraction = 1.0
+							manualOK = true
+						}
+
 						// #879: the live regime comes from the global store, not the
 						// close-eval's check output — so a FLAT manual strategy now
 						// shows a live regime too (pre-#879 the HL check only ran
