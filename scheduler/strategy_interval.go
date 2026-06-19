@@ -97,3 +97,72 @@ func effectiveStrategyIntervals(strategies []StrategyConfig, states map[string]*
 	}
 	return out
 }
+
+// nextStrategyCheckDelay returns the shortest wall-clock wait until any
+// eligible strategy becomes due. Returns 0 when a strategy has never run or is
+// already overdue. Returns -1 when no strategy is eligible (all skipped).
+func nextStrategyCheckDelay(
+	strategies []StrategyConfig,
+	intervals map[string]int,
+	lastRun map[string]time.Time,
+	now time.Time,
+) time.Duration {
+	var minRemaining time.Duration = -1
+	found := false
+
+	for _, sc := range strategies {
+		if shouldSkipZeroCapital(sc) {
+			continue
+		}
+		interval := intervals[sc.ID]
+		if interval <= 0 {
+			continue
+		}
+		found = true
+
+		last, exists := lastRun[sc.ID]
+		if !exists {
+			return 0
+		}
+
+		remaining := time.Duration(interval)*time.Second - now.Sub(last)
+		if remaining <= 0 {
+			return 0
+		}
+		if minRemaining < 0 || remaining < minRemaining {
+			minRemaining = remaining
+		}
+	}
+
+	if !found {
+		return -1
+	}
+	return minRemaining
+}
+
+// schedulerDelay converts nextStrategyCheckDelay into a timer duration for the
+// main loop. A zero delay yields 1s so the due-strategy pass runs promptly.
+// When no strategy is eligible (-1), fall back to tick/global/60s intervals.
+func schedulerDelay(
+	strategies []StrategyConfig,
+	intervals map[string]int,
+	lastRun map[string]time.Time,
+	globalIntervalSeconds int,
+	now time.Time,
+	fallbackSeconds int,
+) time.Duration {
+	delay := nextStrategyCheckDelay(strategies, intervals, lastRun, now)
+	if delay == 0 {
+		return time.Second
+	}
+	if delay < 0 {
+		if fallbackSeconds > 0 {
+			return time.Duration(fallbackSeconds) * time.Second
+		}
+		if globalIntervalSeconds > 0 {
+			return time.Duration(globalIntervalSeconds) * time.Second
+		}
+		return 60 * time.Second
+	}
+	return delay
+}
