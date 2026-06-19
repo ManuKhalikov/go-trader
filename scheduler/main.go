@@ -609,7 +609,7 @@ func main() {
 		// RLock; reuse the same map for due-detection and schedulerDelay
 		// below to avoid re-entering the lock and recomputing per strategy.
 		mu.RLock()
-		intervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
+		intervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct, cfg.OpenPositionIntervalSeconds)
 		mu.RUnlock()
 
 		// Determine which strategies are due this tick
@@ -2439,7 +2439,7 @@ func main() {
 		// re-evaluating ensures a strategy that just entered (or exited)
 		// the warning band gets the fast (or slow) cadence immediately.
 		mu.RLock()
-		endIntervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct)
+		endIntervals := effectiveStrategyIntervals(cfg.Strategies, state.Strategies, cfg.IntervalSeconds, drawdownWarnThresholdPct, cfg.OpenPositionIntervalSeconds)
 		mu.RUnlock()
 		delay := schedulerDelay(cfg.Strategies, endIntervals, lastRun, cfg.IntervalSeconds, time.Now(), tickSeconds)
 		timer := time.NewTimer(delay)

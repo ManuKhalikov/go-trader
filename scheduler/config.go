@@ -130,6 +130,7 @@ func (lc LeaderboardSummaryConfig) Key() string {
 type Config struct {
 	ConfigVersion          int                        `json:"config_version,omitempty"` // bumped when new fields are added; 0/missing = v1 baseline
 	IntervalSeconds        int                        `json:"interval_seconds"`
+	OpenPositionIntervalSeconds int                   `json:"open_position_interval_seconds,omitempty"` // when a strategy has an open position, cap check interval to this (default 120s); 0 = disabled
 	LogDir                 string                     `json:"log_dir"`
 	DBFile                 string                     `json:"db_file,omitempty"`     // SQLite state DB path (default: "scheduler/state.db")
 	StatusPort             int                        `json:"status_port,omitempty"` // HTTP status server port (default: 8099; auto-fallback if taken)
@@ -348,6 +349,7 @@ type StrategyConfig struct {
 	InitialCapital          float64                  `json:"initial_capital,omitempty"` // fixed starting balance for PnL display (never overwritten by capital_pct)
 	MaxDrawdownPct          float64                  `json:"max_drawdown_pct"`
 	IntervalSeconds         int                      `json:"interval_seconds,omitempty"`           // per-strategy override (0 = use global)
+	OpenPositionIntervalSeconds int                  `json:"open_position_interval_seconds,omitempty"` // per-strategy override when position open (0 = use global)
 	HTFFilter               bool                     `json:"htf_filter,omitempty"`                 // higher-timeframe trend filter
 	InvertSignal            bool                     `json:"invert_signal,omitempty"`              // HL perps/manual only: flip BUY<->SELL on a non-zero signal before execution (HOLD/0 is never flipped). Lets inverse variants reuse the same open/close refs. Composes with Direction — invert runs in the Go layer before direction interprets the resulting sign (e.g. direction="short" + invert_signal=true opens short on raw-BUY triggers, distinct from plain direction="short" which opens on raw-SELL). Rejected outside HL perps/manual.
 	AllowShorts             bool                     `json:"allow_shorts,omitempty"`               // DEPRECATED — use Direction. Perps only; legacy boolean retained on the struct so pre-v14 JSON unmarshals cleanly. Read via EffectiveDirection / PerpsAllowsShort / PerpsAllowsLong, never directly. Migrated to Direction in v14 (#656).

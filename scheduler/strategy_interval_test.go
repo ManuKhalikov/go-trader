@@ -14,7 +14,7 @@ func TestEffectiveStrategyIntervalSeconds_DrawdownWarningUsesFastInterval(t *tes
 		},
 	}
 
-	got := effectiveStrategyIntervalSeconds(sc, state, 600, 80)
+	got := effectiveStrategyIntervalSeconds(sc, state, 600, 80, 120)
 	if got != strategyDrawdownFastIntervalSeconds {
 		t.Errorf("effective interval = %d, want %d", got, strategyDrawdownFastIntervalSeconds)
 	}
@@ -29,7 +29,7 @@ func TestEffectiveStrategyIntervalSeconds_DrawdownRecoveryReverts(t *testing.T) 
 		},
 	}
 
-	got := effectiveStrategyIntervalSeconds(sc, state, 600, 80)
+	got := effectiveStrategyIntervalSeconds(sc, state, 600, 80, 120)
 	if got != 3600 {
 		t.Errorf("effective interval = %d, want normal interval 3600", got)
 	}
@@ -49,10 +49,10 @@ func TestEffectiveStrategyIntervalSeconds_OnlyWarningStrategySpeedsUp(t *testing
 		},
 	}
 
-	if got := effectiveStrategyIntervalSeconds(strategies[0], states["warning"], 600, 80); got != strategyDrawdownFastIntervalSeconds {
+	if got := effectiveStrategyIntervalSeconds(strategies[0], states["warning"], 600, 80, 120); got != strategyDrawdownFastIntervalSeconds {
 		t.Errorf("warning strategy interval = %d, want %d", got, strategyDrawdownFastIntervalSeconds)
 	}
-	if got := effectiveStrategyIntervalSeconds(strategies[1], states["normal"], 600, 80); got != 3600 {
+	if got := effectiveStrategyIntervalSeconds(strategies[1], states["normal"], 600, 80, 120); got != 3600 {
 		t.Errorf("normal strategy interval = %d, want 3600", got)
 	}
 }
@@ -66,7 +66,7 @@ func TestEffectiveStrategyIntervalSeconds_DoesNotSlowAlreadyFastStrategy(t *test
 		},
 	}
 
-	got := effectiveStrategyIntervalSeconds(sc, state, 600, 80)
+	got := effectiveStrategyIntervalSeconds(sc, state, 600, 80, 120)
 	if got != 60 {
 		t.Errorf("effective interval = %d, want existing faster interval 60", got)
 	}
@@ -82,7 +82,7 @@ func TestEffectiveStrategyIntervalSeconds_CircuitBreakerIsNotWarningMode(t *test
 		},
 	}
 
-	got := effectiveStrategyIntervalSeconds(sc, state, 600, 80)
+	got := effectiveStrategyIntervalSeconds(sc, state, 600, 80, 120)
 	if got != 3600 {
 		t.Errorf("effective interval = %d, want normal interval 3600 while circuit breaker is active", got)
 	}
@@ -103,9 +103,37 @@ func TestEffectiveStrategyIntervalSeconds_OverMaxDrawdownStillFast(t *testing.T)
 		},
 	}
 
-	got := effectiveStrategyIntervalSeconds(sc, state, 600, 80)
+	got := effectiveStrategyIntervalSeconds(sc, state, 600, 80, 120)
 	if got != strategyDrawdownFastIntervalSeconds {
 		t.Errorf("effective interval = %d, want fast %d when drawdown exceeds max but CB not yet set", got, strategyDrawdownFastIntervalSeconds)
+	}
+}
+
+func TestEffectiveStrategyIntervalSeconds_OpenPositionUsesFastInterval(t *testing.T) {
+	sc := StrategyConfig{ID: "s1", Symbol: "BTC", IntervalSeconds: 900}
+	state := &StrategyState{
+		Positions: map[string]*Position{
+			"BTC": {Symbol: "BTC", Quantity: 0.01, Side: "long"},
+		},
+	}
+
+	got := effectiveStrategyIntervalSeconds(sc, state, 900, 80, 120)
+	if got != 120 {
+		t.Errorf("effective interval = %d, want open-position interval 120", got)
+	}
+}
+
+func TestEffectiveStrategyIntervalSeconds_OpenPositionPerStrategyOverride(t *testing.T) {
+	sc := StrategyConfig{ID: "s1", Symbol: "ETH", IntervalSeconds: 900, OpenPositionIntervalSeconds: 60}
+	state := &StrategyState{
+		Positions: map[string]*Position{
+			"ETH": {Symbol: "ETH", Quantity: 1, Side: "short"},
+		},
+	}
+
+	got := effectiveStrategyIntervalSeconds(sc, state, 900, 80, 120)
+	if got != 60 {
+		t.Errorf("effective interval = %d, want per-strategy open interval 60", got)
 	}
 }
 
@@ -128,7 +156,7 @@ func TestNextStrategyCheckDelay_UsesWarningInterval(t *testing.T) {
 		"normal":  now.Add(-30 * time.Second),
 	}
 
-	intervals := effectiveStrategyIntervals(strategies, states, 600, 80)
+	intervals := effectiveStrategyIntervals(strategies, states, 600, 80, 120)
 	got := nextStrategyCheckDelay(strategies, intervals, lastRun, now)
 	if got != time.Minute {
 		t.Errorf("next delay = %s, want 1m", got)
@@ -143,7 +171,7 @@ func TestNextStrategyCheckDelay_FirstRunReturnsZero(t *testing.T) {
 	strategies := []StrategyConfig{
 		{ID: "fresh", IntervalSeconds: 3600, Capital: 1000},
 	}
-	intervals := effectiveStrategyIntervals(strategies, nil, 600, 80)
+	intervals := effectiveStrategyIntervals(strategies, nil, 600, 80, 120)
 
 	got := nextStrategyCheckDelay(strategies, intervals, map[string]time.Time{}, now)
 	if got != 0 {
@@ -167,7 +195,7 @@ func TestNextStrategyCheckDelay_NoCandidatesReturnsNegative(t *testing.T) {
 		// shouldSkipZeroCapital: capital_pct set (0-1) + capital == 0
 		{ID: "skipped-zero-cap", IntervalSeconds: 3600, CapitalPct: 0.5, Capital: 0},
 	}
-	intervals := effectiveStrategyIntervals(strategies, nil, 600, 80)
+	intervals := effectiveStrategyIntervals(strategies, nil, 600, 80, 120)
 
 	got := nextStrategyCheckDelay(strategies, intervals, map[string]time.Time{}, now)
 	if got != -1 {
