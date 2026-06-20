@@ -32,6 +32,8 @@ func runManualOpen(args []string) int {
 	atr := fs.Float64("atr", 0, "ATR value to stamp on the position (required for ATR-based stops when not auto-fetched)")
 	slATRMult := fs.Float64("stop-loss-atr-mult", 0, "Override stop_loss_atr_mult for this position (0 = use strategy default)")
 	slPct := fs.Float64("stop-loss-pct", 0, "Override stop_loss_pct for this position (0 = use strategy default)")
+	slTriggerPx := fs.Float64("stop-loss-trigger-px", 0, "Absolute stop-loss trigger price (overrides ATR-based SL when > 0)")
+	tpTiersJSON := fs.String("tp-tiers", "", "JSON array of TP tiers [{\"atr_mult\":1.0,\"fraction\":0.4},...] overriding strategy defaults")
 	fillPrice := fs.Float64("fill-price", 0, "Fill price for --record-only (required when --record-only is set)")
 	limitPrice := fs.Float64("limit-price", 0, "Place a resting limit order at this price instead of a market order (#883). The scheduler tracks fills and arms protection post-fill.")
 	tif := fs.String("tif", "Alo", "Time-in-force for --limit-price: Alo=post-only maker (default, rejects a crossed price) or Gtc=allow immediate marketable fill")
@@ -354,8 +356,10 @@ func runManualOpen(args []string) int {
 	var stopLossOID int64
 	var stopLossTriggerPx float64
 
-	if effectiveATRMult > 0 && entryATR > 0 && !*recordOnly {
-		if *side == "long" {
+	if !*recordOnly && (*slTriggerPx > 0 || (effectiveATRMult > 0 && entryATR > 0)) {
+		if *slTriggerPx > 0 {
+			stopLossTriggerPx = *slTriggerPx
+		} else if *side == "long" {
 			stopLossTriggerPx = resolvedFillPrice - effectiveATRMult*entryATR
 		} else {
 			stopLossTriggerPx = resolvedFillPrice + effectiveATRMult*entryATR
@@ -382,8 +386,9 @@ func runManualOpen(args []string) int {
 	// Note: if the strategy has no tiered close AND no ATR-based SL configured,
 	// no warning fires here — that is intentional (no ATR protection requested).
 	var tpOIDs []int64
-	if !*recordOnly && strategyUsesTieredTPATRClose(sc) && entryATR > 0 {
-		oids, warn, err := placeManualProtectionInline(sc, *side, fillQty, resolvedFillPrice, entryATR, effectiveATRMult, stopLossOID)
+	tpTierOverride := parseManualTPTiersJSON(*tpTiersJSON)
+	if !*recordOnly && entryATR > 0 && (strategyUsesTieredTPATRClose(sc) || len(tpTierOverride) > 0) {
+		oids, warn, err := placeManualProtectionInline(sc, *side, fillQty, resolvedFillPrice, entryATR, effectiveATRMult, stopLossOID, tpTierOverride)
 		if err != nil || warn != "" {
 			warnNotifier(notifier, fmt.Sprintf(
 				"[manual-open] %s %s: TP placement issue (position open with SL only): err=%v warn=%s",

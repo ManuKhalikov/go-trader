@@ -11,14 +11,17 @@ import (
 )
 
 type manualOpenBody struct {
-	StrategyID     string  `json:"strategy_id"`
-	Side           string  `json:"side"`
-	Notional       float64 `json:"notional"`
-	Symbol         string  `json:"symbol"`
-	FillPrice      float64 `json:"fill_price,omitempty"`
-	SignalID       string  `json:"signal_id,omitempty"`
-	ClientOrderID  string  `json:"client_order_id,omitempty"`
-	ExpiresAt      string  `json:"expires_at,omitempty"`
+	StrategyID        string  `json:"strategy_id"`
+	Side              string  `json:"side"`
+	Notional          float64 `json:"notional"`
+	Symbol            string  `json:"symbol"`
+	FillPrice         float64 `json:"fill_price,omitempty"`
+	SignalID          string  `json:"signal_id,omitempty"`
+	ClientOrderID     string  `json:"client_order_id,omitempty"`
+	ExpiresAt         string  `json:"expires_at,omitempty"`
+	StopLossATRMult   float64 `json:"stop_loss_atr_mult,omitempty"`
+	StopLossTriggerPx float64 `json:"stop_loss_trigger_px,omitempty"`
+	TPTiers           string  `json:"tp_tiers,omitempty"`
 }
 
 type manualCloseBody struct {
@@ -119,6 +122,15 @@ func (ss *StatusServer) handleManualOpenHTTP(w http.ResponseWriter, r *http.Requ
 	}
 	if body.ClientOrderID != "" {
 		args = append(args, "--client-order-id", body.ClientOrderID)
+	}
+	if body.StopLossATRMult > 0 {
+		args = append(args, "--stop-loss-atr-mult", strconv.FormatFloat(body.StopLossATRMult, 'f', -1, 64))
+	}
+	if body.StopLossTriggerPx > 0 {
+		args = append(args, "--stop-loss-trigger-px", strconv.FormatFloat(body.StopLossTriggerPx, 'f', -1, 64))
+	}
+	if strings.TrimSpace(body.TPTiers) != "" {
+		args = append(args, "--tp-tiers", body.TPTiers)
 	}
 
 	code, stderr := runManualOpenCapture(args)

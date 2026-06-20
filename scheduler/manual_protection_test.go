@@ -38,7 +38,7 @@ func TestPlaceManualProtectionInline_NoTiers(t *testing.T) {
 		Platform:      "hyperliquid",
 		CloseStrategy: &StrategyRef{Name: "tp_at_pct"}, // not tiered_tp_atr*
 	}
-	oids, warn, err := placeManualProtectionInline(sc, "long", 0.8, 2500, 12.5, 1.0, 0)
+	oids, warn, err := placeManualProtectionInline(sc, "long", 0.8, 2500, 12.5, 1.0, 0, nil)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -65,7 +65,7 @@ func TestPlaceManualProtectionInline_SkipsSLSyncWhenAlreadyArmed(t *testing.T) {
 		Platform:      "hyperliquid",
 		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"},
 	}
-	_, _, err := placeManualProtectionInline(sc, "long", 0.002, 63854, 949, 2.0, 12345)
+	_, _, err := placeManualProtectionInline(sc, "long", 0.002, 63854, 949, 2.0, 12345, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestPlaceManualProtectionInline_PassesSLSyncWhenNotYetArmed(t *testing.T) {
 		Platform:      "hyperliquid",
 		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"},
 	}
-	_, _, err := placeManualProtectionInline(sc, "long", 0.002, 63854, 949, 2.0, 0)
+	_, _, err := placeManualProtectionInline(sc, "long", 0.002, 63854, 949, 2.0, 0, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestPlaceManualProtectionInline_TPErrorsSurface(t *testing.T) {
 		Symbol:        "ETH",
 		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"},
 	}
-	oids, warn, err := placeManualProtectionInline(sc, "long", 0.8, 2500, 12.5, 1.0, 0)
+	oids, warn, err := placeManualProtectionInline(sc, "long", 0.8, 2500, 12.5, 1.0, 0, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
