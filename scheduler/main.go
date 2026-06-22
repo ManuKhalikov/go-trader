@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -139,6 +140,18 @@ func main() {
 
 	// #87: Resolve capital_pct → capital for strategies with dynamic sizing.
 	resolveCapitalPct(cfg.Strategies)
+	// Stagger HL capital sync so co-deployed agent boot (leaderboard + baseline)
+	// does not overlap unthrottled /info calls from the same IP.
+	staggerMs := 45000
+	if v := os.Getenv("HL_BOOT_STAGGER_MS"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed >= 0 {
+			staggerMs = parsed
+		}
+	}
+	if staggerMs > 0 {
+		fmt.Printf("[BOOT] Staggering HL capital sync %ds to avoid agent boot burst\n", staggerMs/1000)
+		time.Sleep(time.Duration(staggerMs) * time.Millisecond)
+	}
 	// Refresh HL live capital + flat Cash from the real wallet (unified spot USDC).
 	syncHyperliquidLiveCapitals(cfg.Strategies, state)
 
