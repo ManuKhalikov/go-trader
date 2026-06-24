@@ -905,6 +905,26 @@ func TestResolveManualOpenOrderSize(t *testing.T) {
 			t.Errorf("expected coin-resolution error, got: %v", err)
 		}
 	})
+
+	t.Run("HIP-3 qualified symbol resolves bare mark key", func(t *testing.T) {
+		scHIP3 := StrategyConfig{
+			ID:       "hl-roundtable-sp500",
+			Platform: "hyperliquid",
+			Type:     "manual",
+			Symbol:   "XYZ:SP500",
+			Leverage: 10,
+		}
+		fetch := func(coins []string) (map[string]float64, error) {
+			return map[string]float64{"SP500": 7355.7}, nil
+		}
+		qty, mark, err := resolveManualOpenOrderSize(scHIP3, 0, 1000, 0, fetch)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if fmt.Sprintf("%.6f", qty) != "0.135949" || mark != 7355.7 {
+			t.Errorf("got qty=%g mark=%g; want qty≈0.135949 mark=7355.7", qty, mark)
+		}
+	})
 }
 
 func TestResolveManualOpenOrderSizeLotValidation(t *testing.T) {

@@ -149,3 +149,123 @@ func TestFetchHyperliquidMids_ZeroPriceOmitted(t *testing.T) {
 		t.Errorf("SOL should be omitted (invalid price string)")
 	}
 }
+
+func TestFetchHyperliquidMids_HIP3Qualified(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/info" {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			Type string `json:"type"`
+			Dex  string `json:"dex"`
+		}
+		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
+		if req.Type != "allMids" || req.Dex != "xyz" {
+			http.Error(w, "expected xyz allMids", http.StatusBadRequest)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]string{"xyz:SP500": "7355.70"}) //nolint:errcheck
+	}))
+	defer srv.Close()
+
+	orig := hlMainnetURL
+	hlMainnetURL = srv.URL
+	defer func() { hlMainnetURL = orig }()
+
+	marks, err := fetchHyperliquidMids([]string{"xyz:SP500"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if math.Abs(marks["SP500"]-7355.70) > 1e-6 {
+		t.Errorf("SP500 = %v, want 7355.70", marks["SP500"])
+	}
+}
+
+func TestFetchHyperliquidMids_HIP3CandleFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/info" {
+			http.NotFound(w, r)
+			return
+		}
+		var req map[string]json.RawMessage
+		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
+		var reqType string
+		json.Unmarshal(req["type"], &reqType) //nolint:errcheck
+		switch reqType {
+		case "allMids":
+			json.NewEncoder(w).Encode(map[string]string{}) //nolint:errcheck
+		case "candleSnapshot":
+			json.NewEncoder(w).Encode([]map[string]string{{"c": "7355.70"}}) //nolint:errcheck
+		default:
+			http.Error(w, "unexpected request type", http.StatusBadRequest)
+		}
+	}))
+	defer srv.Close()
+
+	orig := hlMainnetURL
+	hlMainnetURL = srv.URL
+	defer func() { hlMainnetURL = orig }()
+
+	marks, err := fetchHyperliquidMids([]string{"SP500"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if math.Abs(marks["SP500"]-7355.70) > 1e-6 {
+		t.Errorf("SP500 = %v, want 7355.70 from candleSnapshot fallback", marks["SP500"])
+	}
+}
+
+func TestFetchHyperliquidMids_HIP3CandleFallbackOnAllMidsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/info" {
+			http.NotFound(w, r)
+			return
+		}
+		var req map[string]json.RawMessage
+		json.NewDecoder(r.Body).Decode(&req) //nolint:errcheck
+		var reqType string
+		json.Unmarshal(req["type"], &reqType) //nolint:errcheck
+		if reqType == "allMids" {
+			http.Error(w, "allMids unavailable", http.StatusInternalServerError)
+			return
+		}
+		if reqType == "candleSnapshot" {
+			json.NewEncoder(w).Encode([]map[string]float64{{"c": 7355.70}}) //nolint:errcheck
+			return
+		}
+		http.Error(w, "unexpected request type", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	orig := hlMainnetURL
+	hlMainnetURL = srv.URL
+	defer func() { hlMainnetURL = orig }()
+
+	marks, err := fetchHyperliquidMids([]string{"SP500"})
+	if err != nil {
+		t.Fatalf("expected candle fallback after allMids error, got: %v", err)
+	}
+	if math.Abs(marks["SP500"]-7355.70) > 1e-6 {
+		t.Errorf("SP500 = %v, want 7355.70 from candleSnapshot after allMids error", marks["SP500"])
+	}
+}
+
+func TestParseHlJSONPrice(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want float64
+	}{
+		{`"7355.70"`, 7355.70},
+		{`7355.70`, 7355.70},
+	}
+	for _, c := range cases {
+		px, err := parseHlJSONPrice(json.RawMessage(c.raw))
+		if err != nil {
+			t.Fatalf("parseHlJSONPrice(%s): %v", c.raw, err)
+		}
+		if math.Abs(px-c.want) > 1e-6 {
+			t.Errorf("parseHlJSONPrice(%s) = %v, want %v", c.raw, px, c.want)
+		}
+	}
+}

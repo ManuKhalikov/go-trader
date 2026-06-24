@@ -1145,9 +1145,10 @@ func resolveManualOpenOrderSize(sc StrategyConfig, size, notional, margin float6
 	if err != nil {
 		return 0, 0, fmt.Errorf("fetch HL mark for %s: %w", coin, err)
 	}
-	mark := marks[coin]
+	bare := normalizeHlCoin(coin)
+	mark := marks[bare]
 	if mark <= 0 {
-		return 0, 0, fmt.Errorf("HL mark for %s missing or non-positive — cannot resolve --margin/--notional sizing", coin)
+		return 0, 0, fmt.Errorf("HL mark for %s missing or non-positive — cannot resolve --margin/--notional sizing", bare)
 	}
 	qty := resolveManualSize(size, notional, margin, mark, sc.Leverage)
 	if qty <= 0 {
