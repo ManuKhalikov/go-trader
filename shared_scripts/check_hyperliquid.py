@@ -22,6 +22,9 @@ Trailing stop update mode (live only):
 
 Fetch ATR mode (read-only, used by manual-open when --atr is omitted):
     check_hyperliquid.py --fetch-atr --symbol=BTC --timeframe=1h [--period=14]
+
+Round-size probe (read-only, used by manual-open before execute):
+    check_hyperliquid.py --round-size --symbol=BTC --size=0.001 [--mark-price=100000]
 """
 
 import sys
@@ -1250,6 +1253,39 @@ def run_fetch_atr(symbol: str, timeframe: str, period: int):
         print(json.dumps({"error": f"{type(e).__name__}: {e}"}, cls=SafeEncoder))
 
 
+def run_round_size(symbol: str, size: float, mark_price: float = 0.0):
+    """Emit lot-rounded size for a coin qty using live HL meta (#manual-open sizing).
+
+    Used by manual-open before --execute so sub-lot orders fail before
+    update_leverage runs. Exits 0 with JSON on success; exits 1 when the
+    requested size rounds to zero.
+    """
+    try:
+        from adapter import HyperliquidExchangeAdapter, _min_lot_size, resolve_hl_symbol
+        adapter = HyperliquidExchangeAdapter()
+        sym = resolve_hl_symbol(symbol)
+        sz_decimals = adapter._sz_decimals(sym)
+        rounded = round(size, sz_decimals)
+        min_lot = _min_lot_size(sz_decimals)
+        min_notional = min_lot * mark_price if mark_price > 0 else 0.0
+        payload = {
+            "symbol": sym,
+            "requested_size": size,
+            "rounded_size": rounded,
+            "sz_decimals": sz_decimals,
+            "min_lot": min_lot,
+            "min_notional_usd": min_notional,
+            "rounds_to_zero": rounded <= 0,
+        }
+        print(json.dumps(payload, cls=SafeEncoder))
+        if rounded <= 0:
+            sys.exit(1)
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        print(json.dumps({"error": f"{type(e).__name__}: {e}"}, cls=SafeEncoder))
+        sys.exit(1)
+
+
 def run_limit_open(symbol, side, size, limit_px, mode, tif="Alo",
                    margin_mode="", leverage=0, account_leverage=0,
                    account_margin_mode=""):
@@ -1500,6 +1536,20 @@ def main():
         if args.probe_only:
             sys.exit(0)
         run_fetch_atr(args.symbol, args.timeframe, args.period)
+        return
+    if "--round-size" in sys.argv:
+        import argparse
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--round-size", action="store_true")
+        parser.add_argument("--symbol", required=True)
+        parser.add_argument("--size", type=float, required=True)
+        parser.add_argument("--mark-price", type=float, default=0.0)
+        parser.add_argument("--probe-only", action="store_true",
+            help="Startup compatibility probe: validate argv shape and exit 0.")
+        args = parser.parse_args()
+        if args.probe_only:
+            sys.exit(0)
+        run_round_size(args.symbol, args.size, args.mark_price)
         return
     if "--sync-protection" in sys.argv:
         import argparse

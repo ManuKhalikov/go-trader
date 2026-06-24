@@ -147,6 +147,9 @@ func (ss *StatusServer) handleManualOpenHTTP(w http.ResponseWriter, r *http.Requ
 		json.NewEncoder(w).Encode(resp)
 		return
 	}
+	if body.ClientOrderID != "" {
+		ss.recordManualOpenSuccess(body.ClientOrderID)
+	}
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":      "ok",
 		"strategy_id": body.StrategyID,
@@ -159,13 +162,21 @@ func (ss *StatusServer) isDuplicateManualOpen(clientOrderID string) bool {
 	ss.manualOpenMu.Lock()
 	defer ss.manualOpenMu.Unlock()
 	if ss.manualOpenIds == nil {
+		return false
+	}
+	return ss.manualOpenIds[clientOrderID]
+}
+
+func (ss *StatusServer) recordManualOpenSuccess(clientOrderID string) {
+	if strings.TrimSpace(clientOrderID) == "" {
+		return
+	}
+	ss.manualOpenMu.Lock()
+	defer ss.manualOpenMu.Unlock()
+	if ss.manualOpenIds == nil {
 		ss.manualOpenIds = make(map[string]bool)
 	}
-	if ss.manualOpenIds[clientOrderID] {
-		return true
-	}
 	ss.manualOpenIds[clientOrderID] = true
-	return false
 }
 
 func (ss *StatusServer) handleEmergencyCloseHTTP(w http.ResponseWriter, r *http.Request) {

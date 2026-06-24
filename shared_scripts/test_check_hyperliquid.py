@@ -1347,3 +1347,54 @@ class TestComputeTPTierSizes:
         assert sum(sizes) == pytest.approx(0.5)
         assert sizes[0] == pytest.approx(0.25)
         assert sizes[1] == pytest.approx(0.25)
+
+
+class TestRunRoundSize:
+    def test_round_size_emits_json_and_exits_on_zero(self):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter = MagicMock()
+        mock_adapter._sz_decimals.return_value = 3
+
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake = MagicMock()
+                fake.HyperliquidExchangeAdapter.return_value = mock_adapter
+                fake._min_lot_size = lambda d: 10 ** (-d)
+                fake.resolve_hl_symbol = lambda s: s
+                return fake
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with pytest.raises(SystemExit) as exc:
+                mod.run_round_size("BTC", 0.00025, 100000)
+            assert exc.value.code == 1
+
+    def test_round_size_ok_for_valid_qty(self, capsys):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter = MagicMock()
+        mock_adapter._sz_decimals.return_value = 5
+
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                fake = MagicMock()
+                fake.HyperliquidExchangeAdapter.return_value = mock_adapter
+                fake._min_lot_size = lambda d: 10 ** (-d)
+                fake.resolve_hl_symbol = lambda s: s
+                return fake
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            mod.run_round_size("BTC", 0.001, 100000)
+        out = json.loads(capsys.readouterr().out.strip())
+        assert out["rounded_size"] == 0.001
+        assert out["rounds_to_zero"] is False

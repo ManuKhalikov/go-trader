@@ -458,3 +458,18 @@ def test_sz_decimals_uses_cached_value_without_refresh(adapter_mod, monkeypatch)
     assert a._sz_decimals("BTC") == 5
     assert a._sz_decimals("ETH") == 4
     assert rebuilt["called"] is False
+
+
+def test_sz_decimals_universe_fallback_when_sdk_map_empty(adapter_mod, monkeypatch):
+    """When asset_to_sz_decimals misses a symbol, scan raw meta universe (#BTC sz=5)."""
+    monkeypatch.setattr(adapter_mod, "_load_meta_cache",
+                        lambda *a, **kw: (
+                            {"universe": [], "tokens": []},
+                            {"universe": [{"name": "BTC", "szDecimals": 5}]},
+                        ))
+    a = adapter_mod.HyperliquidExchangeAdapter()
+    a._info = MagicMock()
+    a._info.asset_to_sz_decimals = {}
+    a._perp_meta = {"universe": [{"name": "BTC", "szDecimals": 5}]}
+
+    assert a._sz_decimals("BTC") == 5

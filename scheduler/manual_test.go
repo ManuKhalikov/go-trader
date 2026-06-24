@@ -880,6 +880,57 @@ func TestResolveManualOpenOrderSize(t *testing.T) {
 	})
 }
 
+func TestResolveManualOpenOrderSizeLotValidation(t *testing.T) {
+	old := runHyperliquidRoundSizeFn
+	defer func() { runHyperliquidRoundSizeFn = old }()
+
+	sc := StrategyConfig{
+		ID:       "hl-manual-btc",
+		Platform: "hyperliquid",
+		Type:     "manual",
+		Symbol:   "BTC",
+		Script:   "shared_scripts/check_hyperliquid.py",
+		Leverage: 20,
+	}
+	fetch := func(coins []string) (map[string]float64, error) {
+		return map[string]float64{"BTC": 100000}, nil
+	}
+
+	runHyperliquidRoundSizeFn = func(script, symbol string, size, markPrice float64) (*HyperliquidRoundSizeResult, string, error) {
+		return &HyperliquidRoundSizeResult{
+			Symbol:         symbol,
+			RequestedSize:  size,
+			RoundedSize:    0,
+			SzDecimals:     3,
+			MinLot:         0.001,
+			MinNotionalUSD: 100,
+			RoundsToZero:   true,
+		}, "", nil
+	}
+
+	_, _, err := resolveManualOpenOrderSize(sc, 0, 25, 0, fetch)
+	if err == nil {
+		t.Fatal("expected lot validation error for $25 BTC notional")
+	}
+	if !strings.Contains(err.Error(), "rounds to zero") {
+		t.Fatalf("expected rounds-to-zero error, got: %v", err)
+	}
+
+	runHyperliquidRoundSizeFn = func(script, symbol string, size, markPrice float64) (*HyperliquidRoundSizeResult, string, error) {
+		return &HyperliquidRoundSizeResult{
+			RoundedSize:  0.001,
+			RoundsToZero: false,
+		}, "", nil
+	}
+	qty, mark, err := resolveManualOpenOrderSize(sc, 0, 100, 0, fetch)
+	if err != nil {
+		t.Fatalf("unexpected error for $100 BTC: %v", err)
+	}
+	if fmt.Sprintf("%.6f", qty) != "0.001000" || mark != 100000 {
+		t.Errorf("got qty=%g mark=%g; want qty=0.001 mark=100000", qty, mark)
+	}
+}
+
 // TestManualCloseEval_FlatShortCircuits covers the flat early-return: no open
 // position means no subprocess spawn and ok=true. (#879 moved the live regime
 // off this eval's return — the dispatch reads the global regime store, which

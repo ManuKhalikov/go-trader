@@ -1118,6 +1118,12 @@ type manualMarkFetcher func(coins []string) (map[string]float64, error)
 // (qty, mark, err); on --size path mark is 0. (#711)
 func resolveManualOpenOrderSize(sc StrategyConfig, size, notional, margin float64, fetch manualMarkFetcher) (float64, float64, error) {
 	if size > 0 {
+		coin := hyperliquidConfiguredCoin(sc)
+		if coin != "" && sc.Script != "" {
+			if err := validateHLLotSize(sc.Script, coin, size, 0); err != nil {
+				return 0, 0, err
+			}
+		}
 		return size, 0, nil
 	}
 	coin := hyperliquidConfiguredCoin(sc)
@@ -1135,6 +1141,11 @@ func resolveManualOpenOrderSize(sc StrategyConfig, size, notional, margin float6
 	qty := resolveManualSize(size, notional, margin, mark, sc.Leverage)
 	if qty <= 0 {
 		return 0, mark, fmt.Errorf("resolved size is zero (size=%g notional=%g margin=%g mark=%g leverage=%g) — check --margin/--notional and strategy leverage", size, notional, margin, mark, sc.Leverage)
+	}
+	if sc.Script != "" {
+		if err := validateHLLotSize(sc.Script, coin, qty, mark); err != nil {
+			return 0, mark, err
+		}
 	}
 	return qty, mark, nil
 }

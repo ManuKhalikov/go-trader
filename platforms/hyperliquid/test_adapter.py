@@ -410,6 +410,19 @@ class TestOrderExecution:
         with pytest.raises(ValueError, match="Size rounded to zero"):
             adapter.market_open("BTC", True, 0.4)
 
+    def test_market_open_size_rounded_to_zero_includes_min_lot(self):
+        mock_info = MagicMock()
+        mock_info.asset_to_sz_decimals = {"BTC": 3}
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mock_exchange = MagicMock()
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._exchange = mock_exchange
+        adapter._info = mock_info
+
+        with pytest.raises(ValueError, match="rounded to zero"):
+            adapter.market_open("BTC", True, 0.0004)
+
     def test_market_close_live_mode(self):
         mock_info = MagicMock()
         mock_info_cls = MagicMock(return_value=mock_info)

@@ -171,6 +171,34 @@ def _floor_size(sz: float, sz_decimals: int) -> float:
     return float(Decimal(str(sz)).quantize(quant, rounding=ROUND_DOWN))
 
 
+def _min_lot_size(sz_decimals: int) -> float:
+    """Smallest positive order increment for an asset at ``sz_decimals``."""
+    return 10 ** (-max(sz_decimals, 0))
+
+
+def _sz_decimals_from_universe(meta: dict | None, symbol: str) -> int | None:
+    """Read ``szDecimals`` from raw perp ``meta["universe"]`` when the SDK map misses."""
+    if not isinstance(meta, dict):
+        return None
+    universe = meta.get("universe")
+    if not isinstance(universe, list):
+        return None
+    want = symbol.strip()
+    want_base = want.split(":", 1)[-1]
+    for entry in universe:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "")
+        if not name:
+            continue
+        name_base = name.split(":", 1)[-1]
+        if name == want or name_base == want_base:
+            sd = entry.get("szDecimals")
+            if sd is not None:
+                return int(sd)
+    return None
+
+
 def _load_meta_cache(path: str = META_CACHE_PATH, ttl_s: int = META_CACHE_TTL_S, now: float = None):
     """Return (spot_meta, meta) from on-disk cache if fresh, else None.
 
@@ -455,6 +483,8 @@ class HyperliquidExchangeAdapter:
         # lifetime, otherwise a typo or delisted asset would re-fetch meta
         # on every order operation. (PR #769 review point 2.)
         self._sz_decimals_misses: set[str] = set()
+        self._perp_meta: dict | None = None
+        self._universe_sz_cache: dict[str, int] = {}
 
         if secret:
             try:
@@ -485,19 +515,31 @@ class HyperliquidExchangeAdapter:
         cached = _load_meta_cache() if allow_cache else None
         if cached is not None:
             spot_meta, meta = cached
+            self._perp_meta = meta
             return _HLInfo(base_url=base_url, skip_ws=True, meta=meta,
                            spot_meta=_normalize_spot_meta(spot_meta))
         try:
             spot_meta, meta = _fetch_raw_meta(base_url)
             _save_meta_cache(spot_meta, meta)
+            self._perp_meta = meta
             return _HLInfo(base_url=base_url, skip_ws=True, meta=meta,
                            spot_meta=_normalize_spot_meta(spot_meta))
         except Exception as exc:
             # Last-resort fallback: let the SDK's constructor fetch fresh.
             # Costs the same 2 /info as before this change; cache write failed
-            # but trading must continue.
+            # but trading must continue. Keep any loaded _perp_meta for universe
+            # szDecimals fallback when the SDK map is incomplete.
             print(f"[WARN] hl meta fetch failed ({exc}); falling back to SDK init", file=sys.stderr)
             return _HLInfo(base_url=base_url, skip_ws=True)
+
+    def _universe_sz_decimals(self, symbol: str) -> int | None:
+        """Cached lookup in raw perp meta universe (SDK map fallback)."""
+        if symbol in self._universe_sz_cache:
+            return self._universe_sz_cache[symbol]
+        found = _sz_decimals_from_universe(self._perp_meta, symbol)
+        if found is not None:
+            self._universe_sz_cache[symbol] = found
+        return found
 
     def _sz_decimals(self, symbol: str) -> int:
         """Look up sz_decimals for ``symbol``, force-refreshing the cached
@@ -514,6 +556,9 @@ class HyperliquidExchangeAdapter:
         symbol = resolve_hl_symbol(symbol)
         if self._info is not None and symbol in self._info.asset_to_sz_decimals:
             return self._info.asset_to_sz_decimals[symbol]
+        universe_sz = self._universe_sz_decimals(symbol)
+        if universe_sz is not None:
+            return universe_sz
         # Already tried to refresh for this symbol earlier in this subprocess
         # and still couldn't find it — typo or genuinely unlisted asset; the
         # cached universe will not save us. Skip the redundant /info calls.
@@ -528,9 +573,27 @@ class HyperliquidExchangeAdapter:
             return 3
         if self._info is not None and symbol in self._info.asset_to_sz_decimals:
             return self._info.asset_to_sz_decimals[symbol]
+        universe_sz = self._universe_sz_decimals(symbol)
+        if universe_sz is not None:
+            return universe_sz
         print(f"[WARN] sz_decimals not found for {symbol} after refresh, defaulting to 3", file=sys.stderr)
         self._sz_decimals_misses.add(symbol)
         return 3
+
+    def _round_open_size_or_raise(self, symbol: str, size: float, mark_px: float = 0.0) -> float:
+        """Round size to lot precision; raise with min-lot guidance when zero."""
+        sz_decimals = self._sz_decimals(symbol)
+        rounded = round(size, sz_decimals)
+        if rounded > 0:
+            return rounded
+        min_lot = _min_lot_size(sz_decimals)
+        msg = (
+            f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals}): "
+            f"requested {size}, min lot {min_lot}"
+        )
+        if mark_px > 0:
+            msg += f", min notional ~${min_lot * mark_px:.2f}"
+        raise ValueError(msg)
 
     @property
     def is_live(self) -> bool:
@@ -790,11 +853,7 @@ class HyperliquidExchangeAdapter:
             raise RuntimeError(
                 "market_open requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
-        # Round to asset's tick precision to avoid float_to_wire rounding error
-        sz_decimals = self._sz_decimals(symbol)
-        size = round(size, sz_decimals)
-        if size <= 0:
-            raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
+        size = self._round_open_size_or_raise(symbol, size)
         return self._exchange.market_open(symbol, is_buy, size, None, 0.01)
 
     def limit_open(
@@ -825,14 +884,12 @@ class HyperliquidExchangeAdapter:
             raise RuntimeError(
                 "limit_open requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
-        sz_decimals = self._sz_decimals(symbol)
-        size = round(size, sz_decimals)
-        if size <= 0:
-            raise ValueError(f"Size rounded to zero for {symbol} (sz_decimals={sz_decimals})")
+        size = self._round_open_size_or_raise(symbol, size)
         if limit_px <= 0:
             raise ValueError(f"limit_px must be > 0, got {limit_px}")
         if tif not in ("Alo", "Gtc", "Ioc"):
             raise ValueError(f"unsupported tif {tif!r}, expected 'Alo', 'Gtc' or 'Ioc'")
+        sz_decimals = self._sz_decimals(symbol)
         limit_px = _round_perps_px(limit_px, sz_decimals)
         order_type = {"limit": {"tif": tif}}
         return self._exchange.order(
