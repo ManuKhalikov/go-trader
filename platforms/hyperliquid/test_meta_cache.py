@@ -93,9 +93,38 @@ def test_save_then_load_returns_payload(adapter_mod, cache_path):
     adapter_mod._save_meta_cache(spot_meta, meta, path=cache_path)
     got = adapter_mod._load_meta_cache(path=cache_path)
     assert got is not None
-    got_spot, got_meta = got
+    got_spot, got_meta, got_by_dex = got
     assert got_spot == spot_meta
     assert got_meta == meta
+    assert got_by_dex[""] == meta
+
+
+def test_save_load_meta_by_dex_round_trip(adapter_mod, cache_path):
+    spot_meta, meta = _sample_meta()
+    meta_by_dex = {
+        "": meta,
+        "xyz": {"universe": [{"name": "xyz:NVDA", "szDecimals": 3}]},
+    }
+    adapter_mod._save_meta_cache(spot_meta, meta, path=cache_path, meta_by_dex=meta_by_dex)
+    got = adapter_mod._load_meta_cache(path=cache_path)
+    assert got is not None
+    _, _, got_by_dex = got
+    assert got_by_dex["xyz"]["universe"][0]["name"] == "xyz:NVDA"
+    assert got_by_dex["xyz"]["universe"][0]["szDecimals"] == 3
+
+
+def test_load_backward_compat_old_cache_format(adapter_mod, cache_path):
+    """Caches written before meta_by_dex still load; HIP-3 dex map is main-only."""
+    spot_meta, meta = _sample_meta()
+    payload = {"ts": time.time(), "spot_meta": spot_meta, "meta": meta}
+    with open(cache_path, "w") as f:
+        json.dump(payload, f)
+    got = adapter_mod._load_meta_cache(path=cache_path)
+    assert got is not None
+    _, got_meta, got_by_dex = got
+    assert got_meta == meta
+    assert got_by_dex == {"": meta}
+    assert "xyz" not in got_by_dex
 
 
 def test_load_returns_none_when_file_missing(adapter_mod, cache_path):
@@ -470,6 +499,49 @@ def test_sz_decimals_universe_fallback_when_sdk_map_empty(adapter_mod, monkeypat
     a = adapter_mod.HyperliquidExchangeAdapter()
     a._info = MagicMock()
     a._info.asset_to_sz_decimals = {}
-    a._perp_meta = {"universe": [{"name": "BTC", "szDecimals": 5}]}
+    a._perp_meta_by_dex = {"": {"universe": [{"name": "BTC", "szDecimals": 5}]}}
 
     assert a._sz_decimals("BTC") == 5
+
+
+def test_sz_decimals_resolves_hip3_from_xyz_meta(adapter_mod, monkeypatch):
+    """xyz:NVDA must resolve szDecimals from builder-dex meta, not default 3."""
+    main_meta = {"universe": [{"name": "BTC", "szDecimals": 5}]}
+    xyz_meta = {"universe": [{"name": "xyz:NVDA", "szDecimals": 3}]}
+    monkeypatch.setattr(adapter_mod, "_load_meta_cache",
+                        lambda *a, **kw: (
+                            {"universe": [], "tokens": []},
+                            main_meta,
+                            {"": main_meta, "xyz": xyz_meta},
+                        ))
+    a = adapter_mod.HyperliquidExchangeAdapter()
+    a._info = MagicMock()
+    a._info.asset_to_sz_decimals = {"BTC": 5}
+    assert a._sz_decimals("xyz:NVDA") == 3
+    assert a._sz_decimals("NVDA") == 3
+
+
+def test_sz_decimals_hip3_on_demand_dex_meta_fetch(adapter_mod, monkeypatch):
+    """Stale main-only cache: _ensure_dex_perp_meta fetches xyz universe."""
+    main_meta = {"universe": [{"name": "BTC", "szDecimals": 5}]}
+    xyz_meta = {"universe": [{"name": "xyz:NVDA", "szDecimals": 3}]}
+    monkeypatch.setattr(adapter_mod, "_load_meta_cache",
+                        lambda *a, **kw: (
+                            {"universe": [], "tokens": []},
+                            main_meta,
+                        ))
+    a = adapter_mod.HyperliquidExchangeAdapter()
+    a._info = MagicMock()
+    a._info.asset_to_sz_decimals = {"BTC": 5}
+    a._info.meta.return_value = xyz_meta
+    assert a._sz_decimals("xyz:NVDA") == 3
+    a._info.meta.assert_called_with(dex="xyz")
+
+
+def test_perp_meta_for_symbol_hip3_does_not_fallback_to_main(adapter_mod):
+    """HIP-3 symbols must not read szDecimals from the main-dex universe."""
+    main_meta = {"universe": [{"name": "NVDA", "szDecimals": 0}]}
+    mod = adapter_mod
+    assert mod._perp_meta_for_symbol({"": main_meta}, "xyz:NVDA") is None
+    xyz_meta = {"universe": [{"name": "xyz:NVDA", "szDecimals": 3}]}
+    assert mod._perp_meta_for_symbol({"": main_meta, "xyz": xyz_meta}, "xyz:NVDA") is xyz_meta

@@ -1009,3 +1009,24 @@ class TestHIP3DexSupport:
         result = adapter.get_position_leverage("SP500")
         mock_info.user_state.assert_called_once_with("0xABC", dex="xyz")
         assert result == {"margin_mode": "isolated", "leverage": 20}
+
+    def test_sz_decimals_hip3_from_xyz_meta(self, monkeypatch):
+        mock_info = MagicMock()
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        main_meta = {"universe": [{"name": "BTC", "szDecimals": 5}]}
+        xyz_meta = {"universe": [{"name": "xyz:NVDA", "szDecimals": 3}]}
+        monkeypatch.setattr(
+            mod,
+            "_load_meta_cache",
+            lambda *a, **kw: (
+                {"universe": [], "tokens": []},
+                main_meta,
+                {"": main_meta, "xyz": xyz_meta},
+            ),
+        )
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._info = mock_info
+        mock_info.asset_to_sz_decimals = {"BTC": 5}
+        assert adapter._sz_decimals("NVDA") == 3
+        assert adapter._sz_decimals("xyz:NVDA") == 3

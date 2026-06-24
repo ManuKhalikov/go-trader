@@ -211,8 +211,42 @@ def _sz_decimals_from_universe(meta: dict | None, symbol: str) -> int | None:
     return None
 
 
+def _perp_meta_for_symbol(meta_by_dex: dict | None, symbol: str) -> dict | None:
+    """Return raw perp meta for ``symbol``'s builder dex (HIP-3), else main dex."""
+    if not isinstance(meta_by_dex, dict):
+        return None
+    dex = _hl_info_dex(symbol)
+    if dex:
+        meta = meta_by_dex.get(dex)
+        if isinstance(meta, dict) and meta.get("universe"):
+            return meta
+        # HIP-3 symbols must not fall back to main-dex universe — wrong
+        # szDecimals and false name-base matches are worse than a miss.
+        return None
+    meta = meta_by_dex.get("")
+    return meta if isinstance(meta, dict) else None
+
+
+def _normalize_meta_by_dex(meta: dict, meta_by_dex) -> dict:
+    """Build a dex-keyed meta map; old caches only store main-dex ``meta``."""
+    if isinstance(meta_by_dex, dict) and meta_by_dex:
+        out = {}
+        for dex, m in meta_by_dex.items():
+            if isinstance(m, dict) and m.get("universe"):
+                out[str(dex)] = m
+        if out:
+            return out
+    if isinstance(meta, dict) and meta.get("universe"):
+        return {"": meta}
+    return {}
+
+
 def _load_meta_cache(path: str = META_CACHE_PATH, ttl_s: int = META_CACHE_TTL_S, now: float = None):
-    """Return (spot_meta, meta) from on-disk cache if fresh, else None.
+    """Return (spot_meta, meta, meta_by_dex) from on-disk cache if fresh, else None.
+
+    ``meta`` is always the main-dex (``dex=""``) universe for SDK init backward
+    compatibility. ``meta_by_dex`` maps each ``_HL_PERP_DEXS`` entry to its
+    raw /info meta response (includes HIP-3 builder dexes like ``xyz``).
 
     Returns None on any read/parse failure so callers fall through to a fresh
     fetch. Empty {} payloads are treated as cache misses — the SDK rejects them
@@ -239,11 +273,12 @@ def _load_meta_cache(path: str = META_CACHE_PATH, ttl_s: int = META_CACHE_TTL_S,
         return None
     if not spot_meta.get("universe") or not meta.get("universe"):
         return None
-    return spot_meta, meta
+    meta_by_dex = _normalize_meta_by_dex(meta, data.get("meta_by_dex"))
+    return spot_meta, meta, meta_by_dex
 
 
-def _save_meta_cache(spot_meta, meta, path: str = META_CACHE_PATH) -> None:
-    """Persist (spot_meta, meta) atomically.
+def _save_meta_cache(spot_meta, meta, path: str = META_CACHE_PATH, meta_by_dex=None) -> None:
+    """Persist (spot_meta, meta[, meta_by_dex]) atomically.
 
     Uses a temp file in the same directory + os.replace so concurrent writers
     (multiple go-trader instances on one host share /tmp/hl_meta.json) never
@@ -251,6 +286,8 @@ def _save_meta_cache(spot_meta, meta, path: str = META_CACHE_PATH) -> None:
     optimization, not a correctness requirement.
     """
     payload = {"ts": time.time(), "spot_meta": spot_meta, "meta": meta}
+    if isinstance(meta_by_dex, dict) and meta_by_dex:
+        payload["meta_by_dex"] = meta_by_dex
     dir_ = os.path.dirname(path) or "."
     fd = None
     tmp_path = None
@@ -451,10 +488,11 @@ def _normalize_spot_meta(spot_meta):
 
 
 def _fetch_raw_meta(base_url: str):
-    """POST /info {type:spotMeta} + {type:meta} via the SDK's API base class.
+    """POST /info {type:spotMeta} + per-dex {type:meta} via the SDK's API class.
 
-    Returns (spot_meta, meta) — same raw shape the SDK's Info constructor
-    consumes when passed via meta=/spot_meta= kwargs. Errors bubble. Raises
+    Returns (spot_meta, meta, meta_by_dex). ``meta`` is the main-dex universe
+    passed to the SDK Info constructor; ``meta_by_dex`` includes HIP-3 builder
+    dexes (e.g. ``xyz``) for szDecimals lookup. Errors bubble. Raises
     RuntimeError when the SDK's API class isn't importable so callers fall
     back to letting the SDK's Info constructor do the fetch (preserves the
     pre-#768 path).
@@ -463,8 +501,11 @@ def _fetch_raw_meta(base_url: str):
         raise RuntimeError("hyperliquid.api.API unavailable; cannot prefetch meta")
     api = _HLAPI(base_url=base_url)
     spot_meta = api.post("/info", {"type": "spotMeta"})
-    meta = api.post("/info", {"type": "meta", "dex": ""})
-    return spot_meta, meta
+    meta_by_dex = {}
+    for dex in _HL_PERP_DEXS:
+        meta_by_dex[dex] = api.post("/info", {"type": "meta", "dex": dex})
+    meta = meta_by_dex.get("") or meta_by_dex.get(_HL_PERP_DEXS[0])
+    return spot_meta, meta, meta_by_dex
 
 
 class HyperliquidExchangeAdapter:
@@ -495,7 +536,7 @@ class HyperliquidExchangeAdapter:
         # lifetime, otherwise a typo or delisted asset would re-fetch meta
         # on every order operation. (PR #769 review point 2.)
         self._sz_decimals_misses: set[str] = set()
-        self._perp_meta: dict | None = None
+        self._perp_meta_by_dex: dict[str, dict] = {}
         self._universe_sz_cache: dict[str, int] = {}
 
         if secret:
@@ -529,8 +570,12 @@ class HyperliquidExchangeAdapter:
         """
         cached = _load_meta_cache() if allow_cache else None
         if cached is not None:
-            spot_meta, meta = cached
-            self._perp_meta = meta
+            if len(cached) == 2:
+                spot_meta, meta = cached
+                meta_by_dex = _normalize_meta_by_dex(meta, None)
+            else:
+                spot_meta, meta, meta_by_dex = cached
+            self._perp_meta_by_dex = meta_by_dex
             return _HLInfo(
                 base_url=base_url,
                 skip_ws=True,
@@ -539,9 +584,9 @@ class HyperliquidExchangeAdapter:
                 perp_dexs=_HL_PERP_DEXS,
             )
         try:
-            spot_meta, meta = _fetch_raw_meta(base_url)
-            _save_meta_cache(spot_meta, meta)
-            self._perp_meta = meta
+            spot_meta, meta, meta_by_dex = _fetch_raw_meta(base_url)
+            _save_meta_cache(spot_meta, meta, meta_by_dex=meta_by_dex)
+            self._perp_meta_by_dex = meta_by_dex
             return _HLInfo(
                 base_url=base_url,
                 skip_ws=True,
@@ -552,19 +597,52 @@ class HyperliquidExchangeAdapter:
         except Exception as exc:
             # Last-resort fallback: let the SDK's constructor fetch fresh.
             # Costs the same 2 /info as before this change; cache write failed
-            # but trading must continue. Keep any loaded _perp_meta for universe
+            # but trading must continue. Keep any loaded perp meta for universe
             # szDecimals fallback when the SDK map is incomplete.
             print(f"[WARN] hl meta fetch failed ({exc}); falling back to SDK init", file=sys.stderr)
             return _HLInfo(base_url=base_url, skip_ws=True, perp_dexs=_HL_PERP_DEXS)
+
+    @property
+    def _perp_meta(self) -> dict | None:
+        """Main-dex perp meta (backward compat for tests and callers)."""
+        return self._perp_meta_by_dex.get("")
+
+    @_perp_meta.setter
+    def _perp_meta(self, meta: dict | None) -> None:
+        if meta is None:
+            self._perp_meta_by_dex.pop("", None)
+        else:
+            self._perp_meta_by_dex[""] = meta
 
     def _universe_sz_decimals(self, symbol: str) -> int | None:
         """Cached lookup in raw perp meta universe (SDK map fallback)."""
         if symbol in self._universe_sz_cache:
             return self._universe_sz_cache[symbol]
-        found = _sz_decimals_from_universe(self._perp_meta, symbol)
+        found = _sz_decimals_from_universe(
+            _perp_meta_for_symbol(self._perp_meta_by_dex, symbol), symbol
+        )
         if found is not None:
             self._universe_sz_cache[symbol] = found
         return found
+
+    def _ensure_dex_perp_meta(self, symbol: str) -> None:
+        """Fetch and cache HIP-3 builder-dex meta when the disk cache missed it."""
+        dex = _hl_info_dex(symbol)
+        if not dex or not self._info:
+            return
+        existing = self._perp_meta_by_dex.get(dex)
+        if isinstance(existing, dict) and existing.get("universe"):
+            return
+        try:
+            meta = self._info.meta(dex=dex)
+        except Exception as exc:
+            print(
+                f"[WARN] dex meta fetch failed for {symbol} (dex={dex}): {exc}",
+                file=sys.stderr,
+            )
+            return
+        if isinstance(meta, dict) and meta.get("universe"):
+            self._perp_meta_by_dex[dex] = meta
 
     def _sz_decimals(self, symbol: str) -> int:
         """Look up sz_decimals for ``symbol``, force-refreshing the cached
@@ -575,8 +653,9 @@ class HyperliquidExchangeAdapter:
         (sz_decimals=5; allowed price decimals = 6-5 = 1). The guardrail
         (#768 fix #1): on cache hit, if the configured symbol isn't in
         ``asset_to_sz_decimals``, force a meta refresh once before falling
-        back. A still-missing symbol after refresh logs a warning and uses
-        the legacy default 3.
+        back. HIP-3 symbols (``xyz:*``) resolve via builder-dex meta (#HIP-3).
+        A still-missing symbol after refresh logs a warning and uses the
+        legacy default 3.
         """
         symbol = resolve_hl_symbol(symbol)
         if self._info is not None and symbol in self._info.asset_to_sz_decimals:
@@ -589,6 +668,12 @@ class HyperliquidExchangeAdapter:
         # cached universe will not save us. Skip the redundant /info calls.
         if symbol in self._sz_decimals_misses:
             return 3
+        # HIP-3: one cheap per-dex meta fetch before a full cache rebuild.
+        if _hl_info_dex(symbol):
+            self._ensure_dex_perp_meta(symbol)
+            universe_sz = self._universe_sz_decimals(symbol)
+            if universe_sz is not None:
+                return universe_sz
         # Symbol missing — could be a stale cached universe. Refresh once.
         try:
             self._info = self._build_info(self._base_url, allow_cache=False)
