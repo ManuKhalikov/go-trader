@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -98,13 +99,18 @@ func (ss *StatusServer) handleManualOpenHTTP(w http.ResponseWriter, r *http.Requ
 	}
 
 	if body.ClientOrderID != "" && ss.isDuplicateManualOpen(body.ClientOrderID) {
-		json.NewEncoder(w).Encode(map[string]string{
-			"status":     "ok",
-			"duplicate":  "true",
-			"signal_id":  body.SignalID,
-			"strategy_id": body.StrategyID,
-		})
-		return
+		_ = ss.adoptPendingManualActionsSync()
+		if ss.hasAdoptedManualPosition(body.StrategyID, body.Symbol, body.Side) {
+			json.NewEncoder(w).Encode(map[string]string{
+				"status":      "ok",
+				"duplicate":   "true",
+				"signal_id":   body.SignalID,
+				"strategy_id": body.StrategyID,
+			})
+			return
+		}
+		// Stale idempotency from a prior attempt that never adopted a position.
+		ss.clearManualOpenSuccess(body.ClientOrderID)
 	}
 
 	args := []string{
@@ -147,8 +153,17 @@ func (ss *StatusServer) handleManualOpenHTTP(w http.ResponseWriter, r *http.Requ
 		json.NewEncoder(w).Encode(resp)
 		return
 	}
+	// CLI exit 0 means HL fill was confirmed and the action was queued — record
+	// idempotency now so agent retries cannot place a second on-chain order.
 	if body.ClientOrderID != "" {
 		ss.recordManualOpenSuccess(body.ClientOrderID)
+	}
+	if err := ss.adoptPendingManualActionsSync(); err != nil {
+		fmt.Fprintf(os.Stderr, "[manual-open] state adoption failed (HL fill ok): %v\n", err)
+	} else if !ss.hasAdoptedManualPosition(body.StrategyID, body.Symbol, body.Side) {
+		fmt.Fprintf(os.Stderr,
+			"[manual-open] warning: HL fill queued but position not adopted for %s %s %s — scheduler will retry drain\n",
+			body.StrategyID, body.Side, body.Symbol)
 	}
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":      "ok",
@@ -177,6 +192,69 @@ func (ss *StatusServer) recordManualOpenSuccess(clientOrderID string) {
 		ss.manualOpenIds = make(map[string]bool)
 	}
 	ss.manualOpenIds[clientOrderID] = true
+}
+
+func (ss *StatusServer) clearManualOpenSuccess(clientOrderID string) {
+	if strings.TrimSpace(clientOrderID) == "" {
+		return
+	}
+	ss.manualOpenMu.Lock()
+	defer ss.manualOpenMu.Unlock()
+	if ss.manualOpenIds != nil {
+		delete(ss.manualOpenIds, clientOrderID)
+	}
+}
+
+func (ss *StatusServer) configForManualSync() *Config {
+	ss.strategiesMu.RLock()
+	strategies := append([]StrategyConfig(nil), ss.strategies...)
+	ss.strategiesMu.RUnlock()
+	return &Config{Strategies: strategies}
+}
+
+// adoptPendingManualActionsSync drains pending_manual_actions into in-memory
+// state so /status reflects manual fills before the HTTP response returns.
+func (ss *StatusServer) adoptPendingManualActionsSync() error {
+	if ss == nil || ss.state == nil || ss.stateDB == nil || ss.mu == nil {
+		return fmt.Errorf("status server not initialized for manual drain")
+	}
+	cfg := ss.configForManualSync()
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	drainPendingManualActions(ss.state, cfg, ss.stateDB)
+	return SaveStateWithDB(ss.state, cfg, ss.stateDB)
+}
+
+func (ss *StatusServer) hasAdoptedManualPosition(strategyID, symbol, side string) bool {
+	if ss == nil || ss.state == nil || ss.mu == nil {
+		return false
+	}
+	strategyID = strings.TrimSpace(strategyID)
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	side = strings.ToLower(strings.TrimSpace(side))
+	if strategyID == "" || symbol == "" || (side != "long" && side != "short") {
+		return false
+	}
+
+	ss.mu.RLock()
+	defer ss.mu.RUnlock()
+	strat := ss.state.Strategies[strategyID]
+	if strat == nil {
+		return false
+	}
+	for symKey, pos := range strat.Positions {
+		if pos == nil || pos.Quantity <= 0 {
+			continue
+		}
+		posSym := strings.ToUpper(pos.Symbol)
+		if posSym == "" {
+			posSym = strings.ToUpper(symKey)
+		}
+		if posSym == symbol && pos.Side == side {
+			return true
+		}
+	}
+	return false
 }
 
 func (ss *StatusServer) handleEmergencyCloseHTTP(w http.ResponseWriter, r *http.Request) {
@@ -248,6 +326,9 @@ func (ss *StatusServer) handleManualCloseHTTP(w http.ResponseWriter, r *http.Req
 		}
 		json.NewEncoder(w).Encode(resp)
 		return
+	}
+	if err := ss.adoptPendingManualActionsSync(); err != nil {
+		fmt.Fprintf(os.Stderr, "[manual-close] state adoption failed: %v\n", err)
 	}
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":      "ok",

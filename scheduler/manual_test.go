@@ -672,6 +672,33 @@ func TestApplyManualAction_OpenSetsTPOIDs(t *testing.T) {
 	}
 }
 
+// TestConfirmManualLiveFill rejects empty HL fill payloads that would otherwise
+// pass a non-nil Fill pointer with zero qty/price.
+func TestConfirmManualLiveFill(t *testing.T) {
+	avg, sz, fee, err := confirmManualLiveFill(&HyperliquidExecution{Fill: &HyperliquidFill{}})
+	if err == nil {
+		t.Fatalf("expected error for empty fill, got avg=%g sz=%g fee=%g", avg, sz, fee)
+	}
+	if !strings.Contains(err.Error(), "no fill") {
+		t.Errorf("error = %q, want substring 'no fill'", err.Error())
+	}
+
+	_, _, _, err = confirmManualLiveFill(nil)
+	if err == nil {
+		t.Fatal("expected error for nil execution")
+	}
+
+	avg, sz, fee, err = confirmManualLiveFill(&HyperliquidExecution{
+		Fill: &HyperliquidFill{AvgPx: 62666.5, TotalSz: 0.00008, Fee: 0.01},
+	})
+	if err != nil {
+		t.Fatalf("valid fill rejected: %v", err)
+	}
+	if avg != 62666.5 || sz != 0.00008 || fee != 0.01 {
+		t.Errorf("got avg=%g sz=%g fee=%g", avg, sz, fee)
+	}
+}
+
 // TestDefaultManualMarginUSD pins the implicit --margin value used when
 // manual-open is invoked without a sizing flag (#691). Bumping this default
 // changes operator-visible behavior — update intentionally and in step with

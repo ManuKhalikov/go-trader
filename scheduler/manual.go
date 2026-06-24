@@ -283,19 +283,14 @@ func runManualOpen(args []string) int {
 			return 1
 		}
 
-		fill := execResult.Execution
-		if fill == nil || fill.Fill == nil {
-			fmt.Fprintln(os.Stderr, "error: no fill returned from execute")
+		var fillErr error
+		resolvedFillPrice, fillQty, fillFee, fillErr = confirmManualLiveFill(execResult.Execution)
+		if fillErr != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", fillErr)
 			return 1
 		}
-		resolvedFillPrice = fill.Fill.AvgPx
-		fillQty = fill.Fill.TotalSz
-		fillFee = fill.Fill.Fee
-		if fill.Fill.OID != 0 {
-			exchangeOID = fmt.Sprintf("%d", fill.Fill.OID)
-		}
-		if fillQty <= 0 {
-			fillQty = resolveManualSize(*size, *notional, *margin, resolvedFillPrice, sc.Leverage)
+		if execResult.Execution.Fill.OID != 0 {
+			exchangeOID = fmt.Sprintf("%d", execResult.Execution.Fill.OID)
 		}
 
 		// Post-fill ATR plausibility guard.
@@ -306,6 +301,11 @@ func runManualOpen(args []string) int {
 	}
 
 	fmt.Printf("Filled: %s %.6f %s @ $%.4f (fee=$%.4f)\n", *side, fillQty, sc.Symbol, resolvedFillPrice, fillFee)
+
+	if !*recordOnly && fillQty <= 0 {
+		fmt.Fprintln(os.Stderr, "error: refusing to queue open with zero quantity")
+		return 1
+	}
 
 	// Build notifier for warning paths (no-op when Discord/Telegram not configured).
 	notifier, closeNotifier := buildNotifierFromConfig(cfg)
@@ -595,19 +595,14 @@ func runManualAdd(args []string) int {
 			fmt.Fprintf(os.Stderr, "error from HL: %s\n", execResult.Error)
 			return 1
 		}
-		fill := execResult.Execution
-		if fill == nil || fill.Fill == nil {
-			fmt.Fprintln(os.Stderr, "error: no fill returned from execute")
+		var fillErr error
+		resolvedFillPrice, fillQty, fillFee, fillErr = confirmManualLiveFill(execResult.Execution)
+		if fillErr != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", fillErr)
 			return 1
 		}
-		resolvedFillPrice = fill.Fill.AvgPx
-		fillQty = fill.Fill.TotalSz
-		fillFee = fill.Fill.Fee
-		if fill.Fill.OID != 0 {
-			exchangeOID = fmt.Sprintf("%d", fill.Fill.OID)
-		}
-		if fillQty <= 0 {
-			fillQty = resolveManualSize(*size, *notional, *margin, resolvedFillPrice, sc.Leverage)
+		if execResult.Execution.Fill.OID != 0 {
+			exchangeOID = fmt.Sprintf("%d", execResult.Execution.Fill.OID)
 		}
 	}
 
@@ -1106,6 +1101,22 @@ func reorderArgsForPositional(args []string, boolFlags map[string]bool) []string
 		i++
 	}
 	return append(flagArgs, positional...)
+}
+
+// confirmManualLiveFill validates that a live HL execute response contains a
+// real on-chain fill. An empty JSON fill object unmarshals to a non-nil struct
+// with zero qty/price — callers must not treat that as success.
+func confirmManualLiveFill(exec *HyperliquidExecution) (avgPx, totalSz, fee float64, err error) {
+	if exec == nil || exec.Fill == nil {
+		return 0, 0, 0, fmt.Errorf("no fill returned from execute")
+	}
+	avgPx = exec.Fill.AvgPx
+	totalSz = exec.Fill.TotalSz
+	fee = exec.Fill.Fee
+	if totalSz <= 0 || avgPx <= 0 {
+		return 0, 0, 0, fmt.Errorf("HL execute returned no fill (total_sz=%g avg_px=%g)", totalSz, avgPx)
+	}
+	return avgPx, totalSz, fee, nil
 }
 
 // manualMarkFetcher matches fetchHyperliquidMids for dependency injection in

@@ -43,6 +43,10 @@ func TestManualOpenIdempotencyOnlyAfterSuccess(t *testing.T) {
 	if !ss.isDuplicateManualOpen("sig_test") {
 		t.Fatal("recorded success should be duplicate")
 	}
+	ss.clearManualOpenSuccess("sig_test")
+	if ss.isDuplicateManualOpen("sig_test") {
+		t.Fatal("cleared id should not be duplicate")
+	}
 
 	ss2 := &StatusServer{}
 	ss2.recordManualOpenSuccess("")
