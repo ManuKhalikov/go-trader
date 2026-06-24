@@ -120,6 +120,7 @@ class TestMarketData:
         adapter, mock_info = self._make_adapter()
         mock_info.all_mids.return_value = {"xyz:SP500": "5800.0"}
         assert adapter.get_spot_price("SP500") == 5800.0
+        mock_info.all_mids.assert_called_once_with(dex="xyz")
 
     def test_get_spot_price_not_found(self):
         adapter, mock_info = self._make_adapter()
@@ -908,3 +909,103 @@ class TestResolveHlSymbol:
     def test_spx_alias(self):
         mod = _load_hl_adapter()
         assert mod.resolve_hl_symbol("SPX") == "xyz:SP500"
+
+
+class TestHIP3DexSupport:
+    def test_hl_perp_dexs_constant(self):
+        mod = _load_hl_adapter()
+        assert mod._HL_PERP_DEXS == ["", "xyz"]
+
+    def test_hl_info_dex_main_dex_empty(self):
+        mod = _load_hl_adapter()
+        assert mod._hl_info_dex("BTC") == ""
+        assert mod._hl_info_dex("xyz:SP500") == "xyz"
+
+    def test_info_initialized_with_perp_dexs(self, monkeypatch):
+        mock_info = MagicMock()
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        monkeypatch.setattr(
+            mod,
+            "_load_meta_cache",
+            lambda *a, **kw: (
+                {"universe": [{"index": 0, "name": "USDC/USDC", "tokens": [0, 0]}], "tokens": []},
+                {"universe": [{"name": "BTC", "szDecimals": 5}]},
+            ),
+        )
+        mod.HyperliquidExchangeAdapter()
+        assert mock_info_cls.call_args.kwargs.get("perp_dexs") == ["", "xyz"]
+
+    def test_exchange_initialized_with_perp_dexs(self, monkeypatch):
+        mock_info = MagicMock()
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mock_exchange_cls = MagicMock()
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls, mock_exchange_cls=mock_exchange_cls)
+        monkeypatch.setattr(
+            mod,
+            "_load_meta_cache",
+            lambda *a, **kw: (
+                {"universe": [{"index": 0, "name": "USDC/USDC", "tokens": [0, 0]}], "tokens": []},
+                {"universe": [{"name": "BTC", "szDecimals": 5}]},
+            ),
+        )
+        mock_eth = MagicMock()
+        mock_eth.Account.from_key.return_value = MagicMock(address="0xABC")
+        monkeypatch.setitem(sys.modules, "eth_account", mock_eth)
+        test_key = "0x" + "11" * 32
+        with patch.dict(os.environ, {"HYPERLIQUID_SECRET_KEY": test_key}, clear=False):
+            mod.HyperliquidExchangeAdapter()
+        assert mock_exchange_cls.call_args.kwargs.get("perp_dexs") == ["", "xyz"]
+
+    def test_update_leverage_hip3_delegates_to_exchange(self):
+        mock_info = MagicMock()
+        mock_info.name_to_coin = {"xyz:SP500": "xyz:SP500"}
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mock_exchange = MagicMock()
+        mock_exchange.info = mock_info
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._info = mock_info
+        adapter._exchange = mock_exchange
+
+        adapter.update_leverage(20, "SP500", is_cross=False)
+        mock_exchange.update_leverage.assert_called_once_with(20, "xyz:SP500", False)
+
+    def test_update_leverage_unknown_symbol_raises(self):
+        mock_info = MagicMock()
+        mock_info.name_to_coin = {}
+        mock_info.meta.return_value = {"universe": [{"name": "xyz:GOLD"}]}
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mock_exchange = MagicMock()
+        mock_exchange.info = mock_info
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._info = mock_info
+        adapter._exchange = mock_exchange
+
+        with pytest.raises(ValueError, match="not in SDK asset map"):
+            adapter.update_leverage(20, "SP500", is_cross=False)
+        mock_exchange.update_leverage.assert_not_called()
+
+    def test_get_position_leverage_hip3_uses_xyz_dex(self):
+        mock_info = MagicMock()
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._account_address = "0xABC"
+        adapter._info = mock_info
+        mock_info.user_state.return_value = {
+            "assetPositions": [
+                {
+                    "position": {
+                        "coin": "xyz:SP500",
+                        "szi": "0.1",
+                        "leverage": {"type": "isolated", "value": 20},
+                    }
+                }
+            ]
+        }
+
+        result = adapter.get_position_leverage("SP500")
+        mock_info.user_state.assert_called_once_with("0xABC", dex="xyz")
+        assert result == {"margin_mode": "isolated", "leverage": 20}

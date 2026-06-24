@@ -426,7 +426,7 @@ def test_build_info_normalizes_before_sdk(adapter_mod, monkeypatch):
 
     captured = {}
 
-    def fake_info(base_url, skip_ws, meta=None, spot_meta=None):
+    def fake_info(base_url, skip_ws, meta=None, spot_meta=None, **kwargs):
         captured["spot_meta"] = spot_meta
         # Prove the SDK's own loop would survive on what it was handed.
         _sdk_universe_loop(spot_meta)

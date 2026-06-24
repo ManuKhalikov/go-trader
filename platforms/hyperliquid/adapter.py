@@ -25,6 +25,9 @@ TESTNET_URL = "https://api.hyperliquid-testnet.xyz"
 # HIP-3 builder perps on the xyz dex. Strategy config uses bare tickers (SP500);
 # Hyperliquid /info and SDK order calls expect the qualified form (xyz:SP500).
 _HIP3_COINS = frozenset({"SP500", "GOLD", "NVDA", "TSLA", "SPCX"})
+# Main dex ("") plus Trade[XYZ] HIP-3 builder dex. Required so the SDK
+# populates name_to_coin for qualified symbols like xyz:SP500.
+_HL_PERP_DEXS = ["", "xyz"]
 
 
 def resolve_hl_symbol(symbol: str) -> str:
@@ -52,6 +55,15 @@ def resolve_hl_symbol(symbol: str) -> str:
     if s in _HIP3_COINS:
         return f"xyz:{s}"
     return s
+
+
+def _hl_info_dex(symbol: str) -> str:
+    """Return builder-dex id for HIP-3 symbols (e.g. xyz), else main dex."""
+    resolved = resolve_hl_symbol(symbol)
+    if ":" in resolved:
+        return resolved.split(":", 1)[0]
+    return ""
+
 
 # /info `spotMeta` + `meta` rarely change (HL lists new coins on the order of
 # weeks). The SDK's Info constructor re-fetches both on every instantiation,
@@ -493,7 +505,10 @@ class HyperliquidExchangeAdapter:
                 account_addr = addr or wallet.address
                 self._account_address = account_addr
                 self._exchange = _HLExchange(
-                    wallet, base_url=base_url, account_address=account_addr
+                    wallet,
+                    base_url=base_url,
+                    account_address=account_addr,
+                    perp_dexs=_HL_PERP_DEXS,
                 )
             except Exception as e:
                 raise RuntimeError(
@@ -516,21 +531,31 @@ class HyperliquidExchangeAdapter:
         if cached is not None:
             spot_meta, meta = cached
             self._perp_meta = meta
-            return _HLInfo(base_url=base_url, skip_ws=True, meta=meta,
-                           spot_meta=_normalize_spot_meta(spot_meta))
+            return _HLInfo(
+                base_url=base_url,
+                skip_ws=True,
+                meta=meta,
+                spot_meta=_normalize_spot_meta(spot_meta),
+                perp_dexs=_HL_PERP_DEXS,
+            )
         try:
             spot_meta, meta = _fetch_raw_meta(base_url)
             _save_meta_cache(spot_meta, meta)
             self._perp_meta = meta
-            return _HLInfo(base_url=base_url, skip_ws=True, meta=meta,
-                           spot_meta=_normalize_spot_meta(spot_meta))
+            return _HLInfo(
+                base_url=base_url,
+                skip_ws=True,
+                meta=meta,
+                spot_meta=_normalize_spot_meta(spot_meta),
+                perp_dexs=_HL_PERP_DEXS,
+            )
         except Exception as exc:
             # Last-resort fallback: let the SDK's constructor fetch fresh.
             # Costs the same 2 /info as before this change; cache write failed
             # but trading must continue. Keep any loaded _perp_meta for universe
             # szDecimals fallback when the SDK map is incomplete.
             print(f"[WARN] hl meta fetch failed ({exc}); falling back to SDK init", file=sys.stderr)
-            return _HLInfo(base_url=base_url, skip_ws=True)
+            return _HLInfo(base_url=base_url, skip_ws=True, perp_dexs=_HL_PERP_DEXS)
 
     def _universe_sz_decimals(self, symbol: str) -> int | None:
         """Cached lookup in raw perp meta universe (SDK map fallback)."""
@@ -616,7 +641,7 @@ class HyperliquidExchangeAdapter:
     def get_spot_price(self, symbol: str) -> float:
         """Get current mid price for a coin (e.g. 'BTC')."""
         symbol = resolve_hl_symbol(symbol)
-        mids = self._info.all_mids()
+        mids = self._info.all_mids(dex=_hl_info_dex(symbol))
         raw = mids.get(symbol, mids.get(symbol + "-PERP", "0"))
         return float(raw or 0)
 
@@ -1264,6 +1289,29 @@ class HyperliquidExchangeAdapter:
             )
         if leverage < 1:
             raise ValueError(f"leverage must be >= 1, got {leverage}")
+        symbol = resolve_hl_symbol(symbol)
+        exchange_info = self._exchange.info
+        if symbol not in exchange_info.name_to_coin:
+            try:
+                xyz_meta = exchange_info.meta(dex="xyz")
+                names = [
+                    entry.get("name")
+                    for entry in xyz_meta.get("universe", [])
+                    if isinstance(entry, dict) and entry.get("name")
+                ]
+                print(
+                    f"[WARN] HIP-3 universe (dex=xyz): {names}",
+                    file=sys.stderr,
+                )
+            except Exception as exc:
+                print(
+                    f"[WARN] failed to fetch HIP-3 meta for debug: {exc}",
+                    file=sys.stderr,
+                )
+            raise ValueError(
+                f"Symbol {symbol!r} not in SDK asset map; "
+                f"ensure perp_dexs includes the builder dex"
+            )
         return self._exchange.update_leverage(int(leverage), symbol, bool(is_cross))
 
     def get_position_leverage(self, symbol: str) -> dict | None:
@@ -1281,8 +1329,11 @@ class HyperliquidExchangeAdapter:
         """
         if not self._account_address:
             return None
+        symbol = resolve_hl_symbol(symbol)
         try:
-            user_state = self._info.user_state(self._account_address)
+            user_state = self._info.user_state(
+                self._account_address, dex=_hl_info_dex(symbol)
+            )
         except Exception as exc:
             # Don't swallow silently: a transient `info` failure is
             # indistinguishable from "no position" to the caller, which would
