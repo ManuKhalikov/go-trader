@@ -31,13 +31,51 @@ type manualCloseBody struct {
 }
 
 func (ss *StatusServer) configPathForManual() string {
-	if p := os.Getenv("GOTRADER_CONFIG"); p != "" {
-		return p
-	}
 	if ss.configPath != "" {
 		return ss.configPath
 	}
+	if p := os.Getenv("GOTRADER_CONFIG"); p != "" {
+		return p
+	}
 	return "scheduler/config.json"
+}
+
+// summarizeManualStderr returns the last actionable stderr line, skipping audit
+// prefixes like "[manual-open] signal_id=..." that obscure the real failure.
+func summarizeManualStderr(stderr string) string {
+	lines := strings.Split(strings.TrimSpace(stderr), "\n")
+	var last string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "[manual-open] signal_id=") {
+			continue
+		}
+		last = line
+	}
+	return last
+}
+
+func manualErrorDetail(stderr string) string {
+	stderr = strings.TrimSpace(stderr)
+	if stderr == "" {
+		return ""
+	}
+	summary := summarizeManualStderr(stderr)
+	const maxLen = 2048
+	if summary != "" && summary != stderr {
+		combined := summary + "\n" + stderr
+		if len(combined) > maxLen {
+			return combined[:maxLen]
+		}
+		return combined
+	}
+	if len(stderr) > maxLen {
+		return stderr[:maxLen]
+	}
+	return stderr
 }
 
 // statusBindHost returns the listen host for the status HTTP server.
@@ -83,7 +121,7 @@ func (ss *StatusServer) handleManualOpenHTTP(w http.ResponseWriter, r *http.Requ
 
 	body.StrategyID = strings.TrimSpace(body.StrategyID)
 	body.Side = strings.ToLower(strings.TrimSpace(body.Side))
-	body.Symbol = strings.ToUpper(strings.TrimSpace(body.Symbol))
+	body.Symbol = toHyperliquidCoin(strings.TrimSpace(body.Symbol))
 
 	if body.StrategyID == "" || body.Side == "" || body.Notional <= 0 || body.Symbol == "" {
 		w.Header().Set("Content-Type", "application/json")
@@ -148,7 +186,7 @@ func (ss *StatusServer) handleManualOpenHTTP(w http.ResponseWriter, r *http.Requ
 			"exit_code": code,
 		}
 		if stderr != "" {
-			resp["detail"] = strings.TrimSpace(stderr)
+			resp["detail"] = manualErrorDetail(stderr)
 		}
 		json.NewEncoder(w).Encode(resp)
 		return
@@ -230,7 +268,7 @@ func (ss *StatusServer) hasAdoptedManualPosition(strategyID, symbol, side string
 		return false
 	}
 	strategyID = strings.TrimSpace(strategyID)
-	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	symbol = normalizeHlCoin(strings.TrimSpace(symbol))
 	side = strings.ToLower(strings.TrimSpace(side))
 	if strategyID == "" || symbol == "" || (side != "long" && side != "short") {
 		return false
@@ -246,9 +284,9 @@ func (ss *StatusServer) hasAdoptedManualPosition(strategyID, symbol, side string
 		if pos == nil || pos.Quantity <= 0 {
 			continue
 		}
-		posSym := strings.ToUpper(pos.Symbol)
+		posSym := normalizeHlCoin(pos.Symbol)
 		if posSym == "" {
-			posSym = strings.ToUpper(symKey)
+			posSym = normalizeHlCoin(symKey)
 		}
 		if posSym == symbol && pos.Side == side {
 			return true
@@ -268,7 +306,7 @@ func (ss *StatusServer) handleEmergencyCloseHTTP(w http.ResponseWriter, r *http.
 	var body manualCloseBody
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	args := []string{"--config", ss.configPathForManual()}
-	if sym := strings.ToUpper(strings.TrimSpace(body.Symbol)); sym != "" {
+	if sym := toHyperliquidCoin(strings.TrimSpace(body.Symbol)); sym != "" {
 		args = append(args, "--symbol", sym)
 	}
 	code, stderr := runManualCloseCapture(append([]string{"hl-roundtable"}, args...))
@@ -310,7 +348,7 @@ func (ss *StatusServer) handleManualCloseHTTP(w http.ResponseWriter, r *http.Req
 	}
 
 	args := []string{body.StrategyID, "--config", ss.configPathForManual()}
-	if sym := strings.ToUpper(strings.TrimSpace(body.Symbol)); sym != "" {
+	if sym := toHyperliquidCoin(strings.TrimSpace(body.Symbol)); sym != "" {
 		args = append(args, "--symbol", sym)
 	}
 	code, stderr := runManualCloseCapture(args)

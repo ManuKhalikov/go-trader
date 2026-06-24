@@ -878,8 +878,9 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
     cancel_succeeded = False
 
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from adapter import HyperliquidExchangeAdapter, resolve_hl_symbol
         adapter = HyperliquidExchangeAdapter()
+        symbol = resolve_hl_symbol(symbol)
 
         is_buy = side.lower() == "buy"
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -31,6 +32,27 @@ func lotSizeErrorFromRoundResult(result *HyperliquidRoundSizeResult, qty float64
 		return fmt.Errorf("%s", msg)
 	}
 	return nil
+}
+
+func TestSummarizeManualStderr(t *testing.T) {
+	stderr := "[manual-open] signal_id=sig_1 client_order_id=sig_1\nerror: strategy \"hl-roundtable-hype\" has type=\"perps\"; manual-open/close only works with type=manual strategies\n"
+	got := summarizeManualStderr(stderr)
+	want := `error: strategy "hl-roundtable-hype" has type="perps"; manual-open/close only works with type=manual strategies`
+	if got != want {
+		t.Fatalf("summarizeManualStderr = %q, want %q", got, want)
+	}
+	detail := manualErrorDetail(stderr)
+	if !strings.Contains(detail, want) {
+		t.Fatalf("manualErrorDetail should include actionable error, got %q", detail)
+	}
+}
+
+func TestConfigPathForManualPrefersServerConfig(t *testing.T) {
+	t.Setenv("GOTRADER_CONFIG", "scheduler/config.json")
+	ss := &StatusServer{configPath: "scheduler/config.railway.json"}
+	if got := ss.configPathForManual(); got != "scheduler/config.railway.json" {
+		t.Fatalf("configPathForManual() = %q, want server config path", got)
+	}
 }
 
 func TestManualOpenIdempotencyOnlyAfterSuccess(t *testing.T) {

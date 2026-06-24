@@ -74,7 +74,7 @@ func runManualOpen(args []string) int {
 	}
 
 	if *symbolOverride != "" {
-		sc.Symbol = strings.ToUpper(strings.TrimSpace(*symbolOverride))
+		sc.Symbol = toHyperliquidCoin(strings.TrimSpace(*symbolOverride))
 	}
 
 	// #696: resolve --side default after config load so manual_defaults.side
@@ -672,7 +672,7 @@ func runManualClose(args []string) int {
 	ss := state.Strategies[strategyID]
 	closeSymbol := sc.Symbol
 	if *symbolOverride != "" {
-		closeSymbol = strings.ToUpper(strings.TrimSpace(*symbolOverride))
+		closeSymbol = toHyperliquidCoin(strings.TrimSpace(*symbolOverride))
 	}
 	pos := ss.Positions[closeSymbol]
 	if pos == nil {

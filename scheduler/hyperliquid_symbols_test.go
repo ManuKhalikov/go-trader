@@ -32,6 +32,16 @@ func TestToHyperliquidCoin(t *testing.T) {
 	}
 }
 
+func TestToHyperliquidCoinPreservesLowercaseDexPrefix(t *testing.T) {
+	// http_manual used to ToUpper() the whole symbol, breaking HIP-3 (xyz:COIN).
+	if got := toHyperliquidCoin("XYZ:SPCX"); got != "xyz:SPCX" {
+		t.Errorf("toHyperliquidCoin(XYZ:SPCX) = %q, want xyz:SPCX", got)
+	}
+	if got := toHyperliquidCoin("xyz:SPCX"); got != "xyz:SPCX" {
+		t.Errorf("toHyperliquidCoin(xyz:SPCX) = %q, want xyz:SPCX", got)
+	}
+}
+
 func TestHlCoinsMatch(t *testing.T) {
 	if !hlCoinsMatch("SP500", "xyz:SP500") {
 		t.Error("expected SP500 and xyz:SP500 to match")
