@@ -195,23 +195,40 @@ func TestComputeTrailingStopUpdate(t *testing.T) {
 		trailingPct    float64
 		minMovePct     float64
 		currentTrigger float64
+		entryPx        float64
 		wantHighWater  float64
 		wantTrigger    float64
 		wantReplace    bool
 	}{
-		{"long ratchets on favorable mark", "long", 110, 100, 3, 0.5, 97, 110, 106.7, true},
-		{"long high water updates without churn below threshold", "long", 100.4, 100, 3, 0.5, 97, 100.4, 0, false},
-		{"long never lowers trigger", "long", 99, 100, 3, 0.5, 97, 100, 0, false},
-		{"short ratchets down", "short", 90, 100, 3, 0.5, 103, 90, 92.7, true},
-		{"short never raises trigger", "short", 101, 100, 3, 0.5, 103, 100, 0, false},
-		{"missing current trigger places one", "long", 100, 100, 3, 0.5, 0, 100, 97, true},
+		// Baseline cases (no entry floor, entryPx=0).
+		{"long ratchets on favorable mark", "long", 110, 100, 3, 0.5, 97, 0, 110, 106.7, true},
+		{"long high water updates without churn below threshold", "long", 100.4, 100, 3, 0.5, 97, 0, 100.4, 0, false},
+		{"long never lowers trigger", "long", 99, 100, 3, 0.5, 97, 0, 100, 0, false},
+		{"short ratchets down", "short", 90, 100, 3, 0.5, 103, 0, 90, 92.7, true},
+		{"short never raises trigger", "short", 101, 100, 3, 0.5, 103, 0, 100, 0, false},
+		{"missing current trigger places one", "long", 100, 100, 3, 0.5, 0, 0, 100, 97, true},
+		// Entry floor: long SL not yet at entry — floor inactive, normal ratchet.
+		// hwm advances to 106 (mark>hwm), candidate=106*0.95=100.7 > currentTrigger(95) → replace.
+		{"long floor inactive when SL below entry", "long", 106, 105, 5, 0, 95, 100, 106, 100.7, true},
+		// Entry floor: stale hwm (100) with mark=103, trail 5% → candidate=97.85 < entry(100).
+		// currentTrigger(102) >= entry(100) → floor clamps candidate to 100.
+		// favorable: 100 > 102? NO → (103, 0, false).
+		{"long floor active: stale hwm produces below-entry candidate, no replace", "long", 103, 100, 5, 0, 102, 100, 103, 0, false},
+		// Short baseline: SL above entry, floor inactive.
+		// hwm: mark(90) < hwm(95) → hwm=90; candidate=90*1.05=94.5 < currentTrigger(105) → replace.
+		{"short floor inactive when SL above entry", "short", 90, 95, 5, 0, 105, 100, 90, 94.5, true},
+		// Short floor: currentTrigger(99) <= entry(100) → floor active.
+		// hwm: mark(96) > hwm(95) for short? no; mark(96) > hwm(95) → short hwm stays at min, 95 stays.
+		// candidate = 95*1.05=99.75; min(99.75,100)=99.75 (already below entry — no clamping needed).
+		// favorable: 99.75 < 99? NO → (95, 0, false).
+		{"short floor active: candidate already below entry, no replace", "short", 96, 95, 5, 0, 99, 100, 95, 0, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			gotHighWater, gotTrigger, gotReplace := computeTrailingStopUpdate(c.side, c.mark, c.highWater, c.trailingPct, c.minMovePct, c.currentTrigger)
+			gotHighWater, gotTrigger, gotReplace := computeTrailingStopUpdate(c.side, c.mark, c.highWater, c.trailingPct, c.minMovePct, c.currentTrigger, c.entryPx)
 			if gotHighWater != c.wantHighWater || floatDiff(gotTrigger, c.wantTrigger) > 1e-9 || gotReplace != c.wantReplace {
-				t.Fatalf("computeTrailingStopUpdate = (%v, %v, %v), want (%v, %v, %v)",
-					gotHighWater, gotTrigger, gotReplace, c.wantHighWater, c.wantTrigger, c.wantReplace)
+				t.Fatalf("computeTrailingStopUpdate(%q) = (%v, %v, %v), want (%v, %v, %v)",
+					c.name, gotHighWater, gotTrigger, gotReplace, c.wantHighWater, c.wantTrigger, c.wantReplace)
 			}
 		})
 	}

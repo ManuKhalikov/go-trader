@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -44,14 +45,21 @@ func formatProtectionSyncWarnings(result *HyperliquidProtectionSyncResult) []str
 	return warns
 }
 
-// computeFallbackATR returns a leverage-aware ATR fallback of 0.1*fillPrice/leverage,
-// representing a price move that risks 10% of deployed margin at 1× ATR. Returns
-// ok=false when leverage or fillPrice are not positive (caller must warn naked).
-func computeFallbackATR(fillPrice, leverage float64) (float64, bool) {
-	if leverage <= 0 || fillPrice <= 0 {
+// computeFallbackATR returns a fixed-percentage ATR estimate for CLI operator opens
+// where ATR auto-fetch failed and no explicit --atr was provided. The percentage is
+// controlled by MANUAL_OPEN_ATR_FALLBACK_PCT (default 0.5% of fill price).
+// Only called when --signal-id is absent; agent HTTP opens abort instead.
+func computeFallbackATR(fillPrice float64) (float64, bool) {
+	if fillPrice <= 0 {
 		return 0, false
 	}
-	return 0.1 * fillPrice / leverage, true
+	pct := 0.5
+	if s := os.Getenv("MANUAL_OPEN_ATR_FALLBACK_PCT"); s != "" {
+		if v, err := strconv.ParseFloat(s, 64); err == nil && v > 0 {
+			pct = v
+		}
+	}
+	return fillPrice * pct / 100, true
 }
 
 // placeManualProtectionInline calls --sync-protection inline after a manual fill

@@ -411,14 +411,14 @@ func resolveLimitFillEntryATR(sc StrategyConfig, rowATR, avgPx float64, notifier
 			if ok {
 				fetchErr = fmt.Sprintf("fetched ATR=%.6f exceeds 50%% of fill price %.4f", fetched, avgPx)
 			}
-			if fb, fbOK := computeFallbackATR(avgPx, sc.Leverage); fbOK {
+			if fb, fbOK := computeFallbackATR(avgPx); fbOK {
 				entryATR = fb
 				warnNotifier(notifier, fmt.Sprintf(
-					"[limit-fill] %s %s: ATR auto-fetch failed (%s); using fallback ATR=%.6f — pass --atr on manual-open for accuracy",
-					sc.ID, sc.Symbol, fetchErr, fb))
+					"[limit-fill] %s %s: ATR auto-fetch failed (%s); using fallback ATR=%.6f (%.4g%% of $%.4f via MANUAL_OPEN_ATR_FALLBACK_PCT) — pass --atr for accuracy",
+					sc.ID, sc.Symbol, fetchErr, fb, fb/avgPx*100, avgPx))
 			} else {
 				warnNotifier(notifier, fmt.Sprintf(
-					"[limit-fill] %s %s: ATR auto-fetch failed (%s) and leverage<=0 — position is NAKED (no ATR-based SL/TP)",
+					"[limit-fill] %s %s: ATR auto-fetch failed (%s) — fill price<=0 or fallback unavailable; position is NAKED",
 					sc.ID, sc.Symbol, fetchErr))
 			}
 		}

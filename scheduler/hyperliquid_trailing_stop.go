@@ -449,7 +449,7 @@ func effectiveTrailingStopMinMovePct(sc StrategyConfig) float64 {
 	return defaultTrailingStopMinMovePct
 }
 
-func computeTrailingStopUpdate(side string, mark, highWater, trailingPct, minMovePct, currentTrigger float64) (float64, float64, bool) {
+func computeTrailingStopUpdate(side string, mark, highWater, trailingPct, minMovePct, currentTrigger, entryPx float64) (float64, float64, bool) {
 	if mark <= 0 || trailingPct <= 0 {
 		return highWater, 0, false
 	}
@@ -484,6 +484,22 @@ func computeTrailingStopUpdate(side string, mark, highWater, trailingPct, minMov
 	if candidateTrigger <= 0 {
 		return candidateHighWater, 0, false
 	}
+
+	// One-directional entry floor: once SL has ratcheted past entry price,
+	// never let it retract back below entry (long) or above entry (short).
+	if entryPx > 0 {
+		switch side {
+		case "long":
+			if currentTrigger >= entryPx && candidateTrigger < entryPx {
+				candidateTrigger = entryPx
+			}
+		case "short":
+			if currentTrigger > 0 && currentTrigger <= entryPx && candidateTrigger > entryPx {
+				candidateTrigger = entryPx
+			}
+		}
+	}
+
 	if currentTrigger <= 0 {
 		return candidateHighWater, candidateTrigger, true
 	}
@@ -564,7 +580,7 @@ func runHyperliquidTrailingStopPaper(sc StrategyConfig, side string, pos *Positi
 	if highWater <= 0 {
 		highWater = avgCost
 	}
-	nhw, nt, replace := computeTrailingStopUpdate(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger)
+	nhw, nt, replace := computeTrailingStopUpdate(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, avgCost)
 	if replace {
 		return nhw, nt, false, 0
 	}
@@ -646,7 +662,7 @@ func runHyperliquidTrailingStopUpdate(sc StrategyConfig, symbol, side string, qt
 	if highWater <= 0 {
 		highWater = avgCost
 	}
-	newHighWater, newTrigger, replace := computeTrailingStopUpdate(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger)
+	newHighWater, newTrigger, replace := computeTrailingStopUpdate(side, mark, highWater, trailingPct, effectiveTrailingStopMinMovePct(sc), currentTrigger, avgCost)
 	if forceResize && !replace {
 		// #873: a scale-in grew the position; the resting trailing SL still
 		// covers only the pre-add size. Force a cancel+replace at the EXISTING

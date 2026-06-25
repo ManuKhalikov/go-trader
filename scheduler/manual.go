@@ -337,14 +337,30 @@ func runManualOpen(args []string) int {
 				}
 			}
 			if !fetchedOK {
-				if fb, ok := computeFallbackATR(resolvedFillPrice, sc.Leverage); ok {
+				if *signalID != "" {
+					// Agent HTTP path: abort so go-trader 422 is the safety-net gate.
+					// The fill is already on-chain; flatten it before returning.
+					fmt.Fprintf(os.Stderr, "error: ATR auto-fetch failed (%s) and agent did not pass --atr — aborting to prevent naked stop-loss geometry\n", fetchErr)
+					warnNotifier(notifier, fmt.Sprintf(
+						"[manual-open] %s %s: agent ATR missing (signal_id=%s); fetch failed: %s — aborting and cleaning up on-chain fill",
+						strategyID, sc.Symbol, *signalID, fetchErr))
+					cleanedUp, cleanupMsg := attemptManualOpenCleanup(sc.Symbol, fillQty, 0, nil)
+					if !cleanedUp {
+						warnNotifier(notifier, fmt.Sprintf(
+							"[manual-open] %s %s: cleanup after ATR-abort FAILED: %s — MANUAL INTERVENTION REQUIRED",
+							strategyID, sc.Symbol, cleanupMsg))
+					}
+					return 1
+				}
+				// CLI operator path: use fixed-% fallback.
+				if fb, ok := computeFallbackATR(resolvedFillPrice); ok {
 					entryATR = fb
 					warnNotifier(notifier, fmt.Sprintf(
-						"[manual-open] %s %s: ATR auto-fetch failed (%s); using fallback ATR=%.6f (0.1*%.4f/%.2f lev) — pass --atr explicitly for accuracy",
-						strategyID, sc.Symbol, fetchErr, fb, resolvedFillPrice, sc.Leverage))
+						"[manual-open] %s %s: ATR auto-fetch failed (%s); using fallback ATR=%.6f (%.4g%% of $%.4f via MANUAL_OPEN_ATR_FALLBACK_PCT) — pass --atr for accuracy",
+						strategyID, sc.Symbol, fetchErr, fb, fb/resolvedFillPrice*100, resolvedFillPrice))
 				} else {
 					warnNotifier(notifier, fmt.Sprintf(
-						"[manual-open] %s %s: ATR auto-fetch failed (%s) and leverage<=0 — cannot compute fallback; position is NAKED (no ATR-based SL/TP)",
+						"[manual-open] %s %s: ATR auto-fetch failed (%s) and fill price <= 0 — cannot compute fallback; position is NAKED (no ATR-based SL/TP)",
 						strategyID, sc.Symbol, fetchErr))
 				}
 			}

@@ -9,26 +9,34 @@ import (
 func TestComputeFallbackATR(t *testing.T) {
 	cases := []struct {
 		fillPrice float64
-		leverage  float64
 		wantATR   float64
 		wantOK    bool
 	}{
-		{2500, 20, 12.5, true}, // issue worked example: ETH @ $2500, 20× lev
-		{100, 10, 1.0, true},   // basic
-		{100, 0, 0, false},     // leverage == 0
-		{100, -1, 0, false},    // leverage < 0
-		{0, 10, 0, false},      // fillPrice == 0
-		{-1, 10, 0, false},     // fillPrice < 0
-		{2500, 1, 250, true},   // 1× leverage → 10% of price
+		{2500, 12.5, true},  // default 0.5%: 2500 * 0.5/100 = 12.5
+		{100, 0.5, true},    // default 0.5%: 100 * 0.5/100 = 0.5
+		{0, 0, false},       // fillPrice == 0
+		{-1, 0, false},      // fillPrice < 0
 	}
 	for _, c := range cases {
-		got, ok := computeFallbackATR(c.fillPrice, c.leverage)
+		got, ok := computeFallbackATR(c.fillPrice)
 		if ok != c.wantOK {
-			t.Errorf("computeFallbackATR(%.2f, %.2f): ok=%v want %v", c.fillPrice, c.leverage, ok, c.wantOK)
+			t.Errorf("computeFallbackATR(%.2f): ok=%v want %v", c.fillPrice, ok, c.wantOK)
 		}
 		if ok && (got < c.wantATR*0.9999 || got > c.wantATR*1.0001) {
-			t.Errorf("computeFallbackATR(%.2f, %.2f): atr=%.6f want %.6f", c.fillPrice, c.leverage, got, c.wantATR)
+			t.Errorf("computeFallbackATR(%.2f): atr=%.6f want %.6f", c.fillPrice, got, c.wantATR)
 		}
+	}
+}
+
+func TestComputeFallbackATR_EnvPct(t *testing.T) {
+	t.Setenv("MANUAL_OPEN_ATR_FALLBACK_PCT", "2.0")
+	got, ok := computeFallbackATR(1000)
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	// 1000 * 2.0 / 100 = 20.0
+	if got < 19.999 || got > 20.001 {
+		t.Errorf("got %.6f, want 20.0", got)
 	}
 }
 

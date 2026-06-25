@@ -1258,6 +1258,48 @@ func runPostTPStopLossAdjustment(
 		}
 	}
 
+	// Naked window: cancel removed the old SL but the re-placement failed —
+	// re-arm once immediately before advancing the watermark. Not retrying
+	// leaves the position momentarily unprotected.
+	nakedWindow := result.CancelStopLossError == "" && currentOID > 0 &&
+		result.StopLossOID == 0 && !result.StopLossFilledImmediately && result.StopLossError != ""
+	if nakedWindow {
+		// Clear the stale OID so state doesn't reference a cancelled order.
+		mu.Lock()
+		if pClean, ok2 := stratState.Positions[symbol]; ok2 && pClean != nil {
+			pClean.StopLossOID = 0
+		}
+		mu.Unlock()
+
+		result2, stderr2, err2 := runHyperliquidUpdateStopLossFunc(sc.Script, symbol, side, slEffectiveQty, triggerPx, 0)
+		if stderr2 != "" && logger != nil {
+			logger.Info("post-TP SL naked-window retry stderr: %s", stderr2)
+		}
+		retryOK := err2 == nil && result2 != nil && result2.Error == "" &&
+			(result2.StopLossOID > 0 || result2.StopLossFilledImmediately)
+		if !retryOK {
+			retryReason := "unknown retry failure"
+			if err2 != nil {
+				retryReason = err2.Error()
+			} else if result2 != nil && result2.Error != "" {
+				retryReason = result2.Error
+			} else if result2 != nil && result2.StopLossError != "" {
+				retryReason = result2.StopLossError
+			}
+			msg := fmt.Sprintf("**CRITICAL: POST-TP SL NAKED WINDOW** [%s] %s — cancel of OID %d succeeded but re-placement failed (%s) and retry also failed (%s). Position is UNPROTECTED at trigger $%.4f. Manual SL placement required.",
+				sc.ID, symbol, currentOID, result.StopLossError, retryReason, triggerPx)
+			if logger != nil {
+				logger.Error("CRITICAL: post-TP SL naked window for %s — manual intervention required", symbol)
+			}
+			if notifier != nil && notifier.HasBackends() {
+				notifier.SendToAllChannels(msg)
+				notifier.SendOwnerDM(msg)
+			}
+			return false // do NOT advance watermark
+		}
+		result = result2 // retry succeeded — fall through to Phase 3
+	}
+
 	// Phase 3: Lock — apply the update.
 	mu.Lock()
 	p, ok := stratState.Positions[symbol]
@@ -1266,6 +1308,7 @@ func runPostTPStopLossAdjustment(
 		return false
 	}
 	oldTrigger := p.StopLossTriggerPx
+	slSuccess := result.StopLossOID > 0 || result.StopLossFilledImmediately
 	if result.StopLossOID > 0 {
 		p.StopLossOID = result.StopLossOID
 	}
@@ -1274,7 +1317,12 @@ func runPostTPStopLossAdjustment(
 	} else {
 		p.StopLossTriggerPx = triggerPx
 	}
-	p.SLAdjustedTiersProcessed = clearedIdx + 1
+	// Advance watermark only when SL was actually placed or filled; a placement
+	// failure that doesn't reach the naked-window branch (e.g., cap rejection)
+	// should not advance so the next cycle can retry.
+	if slSuccess {
+		p.SLAdjustedTiersProcessed = clearedIdx + 1
+	}
 	transitionedToTrailing := false
 	if rule.Kind == "trail_from_here" && rule.TrailATRMult > 0 {
 		mult := rule.TrailATRMult

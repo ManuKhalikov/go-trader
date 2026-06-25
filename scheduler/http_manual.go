@@ -20,6 +20,7 @@ type manualOpenBody struct {
 	SignalID          string  `json:"signal_id,omitempty"`
 	ClientOrderID     string  `json:"client_order_id,omitempty"`
 	ExpiresAt         string  `json:"expires_at,omitempty"`
+	ATR               float64 `json:"atr,omitempty"`
 	StopLossATRMult   float64 `json:"stop_loss_atr_mult,omitempty"`
 	StopLossTriggerPx float64 `json:"stop_loss_trigger_px,omitempty"`
 	TPTiers           string  `json:"tp_tiers,omitempty"`
@@ -166,6 +167,9 @@ func (ss *StatusServer) handleManualOpenHTTP(w http.ResponseWriter, r *http.Requ
 	}
 	if body.ClientOrderID != "" {
 		args = append(args, "--client-order-id", body.ClientOrderID)
+	}
+	if body.ATR > 0 {
+		args = append(args, "--atr", strconv.FormatFloat(body.ATR, 'f', -1, 64))
 	}
 	if body.StopLossATRMult > 0 {
 		args = append(args, "--stop-loss-atr-mult", strconv.FormatFloat(body.StopLossATRMult, 'f', -1, 64))
