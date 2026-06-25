@@ -299,6 +299,35 @@ func (ss *StatusServer) hasAdoptedManualPosition(strategyID, symbol, side string
 	return false
 }
 
+// resolveEmergencyCloseStrategyID returns the strategy to close; defaults to
+// hl-roundtable when the agent omits strategy_id (legacy clients).
+func resolveEmergencyCloseStrategyID(strategyID string) string {
+	strategyID = strings.TrimSpace(strategyID)
+	if strategyID == "" {
+		return "hl-roundtable"
+	}
+	return strategyID
+}
+
+// buildEmergencyCloseArgv builds argv for manual-close from an emergency-close request.
+func buildEmergencyCloseArgv(strategyID, configPath, symbol string) []string {
+	args := []string{resolveEmergencyCloseStrategyID(strategyID), "--config", configPath}
+	if sym := toHyperliquidCoin(strings.TrimSpace(symbol)); sym != "" {
+		args = append(args, "--symbol", sym)
+	}
+	return args
+}
+
+func (ss *StatusServer) finishManualCloseSuccess(w http.ResponseWriter, strategyID, logPrefix string) {
+	if err := ss.adoptPendingManualActionsSync(); err != nil {
+		fmt.Fprintf(os.Stderr, "[%s] state adoption failed: %v\n", logPrefix, err)
+	}
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":      "ok",
+		"strategy_id": strategyID,
+	})
+}
+
 func (ss *StatusServer) handleEmergencyCloseHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -308,19 +337,22 @@ func (ss *StatusServer) handleEmergencyCloseHTTP(w http.ResponseWriter, r *http.
 		return
 	}
 	var body manualCloseBody
-	_ = json.NewDecoder(r.Body).Decode(&body)
-	args := []string{"--config", ss.configPathForManual()}
-	if sym := toHyperliquidCoin(strings.TrimSpace(body.Symbol)); sym != "" {
-		args = append(args, "--symbol", sym)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid json"})
+		return
 	}
-	code, stderr := runManualCloseCapture(append([]string{"hl-roundtable"}, args...))
+	strategyID := resolveEmergencyCloseStrategyID(body.StrategyID)
+	args := buildEmergencyCloseArgv(strategyID, ss.configPathForManual(), body.Symbol)
+	code, stderr := runManualCloseCapture(args)
 	w.Header().Set("Content-Type", "application/json")
 	if code != 0 {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]any{"error": "emergency-close failed", "detail": strings.TrimSpace(stderr)})
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	ss.finishManualCloseSuccess(w, strategyID, "emergency-close")
 }
 
 func (ss *StatusServer) handleManualCloseHTTP(w http.ResponseWriter, r *http.Request) {
@@ -369,13 +401,7 @@ func (ss *StatusServer) handleManualCloseHTTP(w http.ResponseWriter, r *http.Req
 		json.NewEncoder(w).Encode(resp)
 		return
 	}
-	if err := ss.adoptPendingManualActionsSync(); err != nil {
-		fmt.Fprintf(os.Stderr, "[manual-close] state adoption failed: %v\n", err)
-	}
-	json.NewEncoder(w).Encode(map[string]string{
-		"status":      "ok",
-		"strategy_id": body.StrategyID,
-	})
+	ss.finishManualCloseSuccess(w, body.StrategyID, "manual-close")
 }
 
 func runManualOpenCapture(args []string) (int, string) {

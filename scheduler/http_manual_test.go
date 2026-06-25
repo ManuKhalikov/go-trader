@@ -55,6 +55,41 @@ func TestConfigPathForManualPrefersServerConfig(t *testing.T) {
 	}
 }
 
+func TestResolveEmergencyCloseStrategyID(t *testing.T) {
+	if got := resolveEmergencyCloseStrategyID(""); got != "hl-roundtable" {
+		t.Fatalf("empty strategy_id = %q, want hl-roundtable", got)
+	}
+	if got := resolveEmergencyCloseStrategyID("  hl-roundtable-eth  "); got != "hl-roundtable-eth" {
+		t.Fatalf("trimmed strategy_id = %q, want hl-roundtable-eth", got)
+	}
+}
+
+func TestBuildEmergencyCloseArgv(t *testing.T) {
+	t.Run("defaults strategy to hl-roundtable", func(t *testing.T) {
+		args := buildEmergencyCloseArgv("", "cfg.json", "BTC")
+		want := []string{"hl-roundtable", "--config", "cfg.json", "--symbol", "BTC"}
+		if strings.Join(args, " ") != strings.Join(want, " ") {
+			t.Fatalf("args = %v, want %v", args, want)
+		}
+	})
+	t.Run("uses strategy_id from body", func(t *testing.T) {
+		args := buildEmergencyCloseArgv("hl-roundtable-eth", "cfg.json", "ETH")
+		if args[0] != "hl-roundtable-eth" {
+			t.Fatalf("first arg = %q, want hl-roundtable-eth", args[0])
+		}
+		if !strings.Contains(strings.Join(args, " "), "--symbol ETH") {
+			t.Fatalf("expected --symbol ETH in %v", args)
+		}
+	})
+	t.Run("omits symbol when empty", func(t *testing.T) {
+		args := buildEmergencyCloseArgv("hl-roundtable", "cfg.json", "")
+		want := []string{"hl-roundtable", "--config", "cfg.json"}
+		if strings.Join(args, " ") != strings.Join(want, " ") {
+			t.Fatalf("args = %v, want %v", args, want)
+		}
+	})
+}
+
 func TestManualOpenIdempotencyOnlyAfterSuccess(t *testing.T) {
 	ss := &StatusServer{}
 
