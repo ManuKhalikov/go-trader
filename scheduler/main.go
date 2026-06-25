@@ -1336,6 +1336,9 @@ func main() {
 				// shared-wallet risk check (#243 review feedback) so we don't
 				// pay two HL API round-trips per cycle.
 				var hlReconcileFillHintsJSON []byte
+				if hlStateFetched {
+					hlReconcileDue = appendHLReconcileMismatched(hlReconcileDue, hlReconcileAll, state, &mu, hlPositions)
+				}
 				if len(hlReconcileDue) > 0 && hlStateFetched {
 					_, fillHints, orphanCloseJobs := reconcileHyperliquidAccountPositions(hlReconcileDue, hlReconcileAll, state, &mu, logMgr, hlPositions, prices, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"), notifier, cfg.NotifyTPSLFillsEnabled())
 					if len(orphanCloseJobs) > 0 {
@@ -2145,7 +2148,7 @@ func main() {
 								}
 								execResult, execStderr, execErr := RunHyperliquidExecute(
 									sc.Script, sc.Symbol, closeSide, closeQty,
-									0, cancelOID, 0, "", 0, closeFullPosition, hlExecuteSnapshot{}, extraCancelOIDs...,
+									0, cancelOID, 0, "", 0, closeFullPosition, true, hlExecuteSnapshot{}, extraCancelOIDs...,
 								)
 								if execStderr != "" {
 									logger.Info("HL manual close stderr: %s", execStderr)
@@ -2164,6 +2167,18 @@ func main() {
 								if execResult.CancelStopLossError != "" {
 									logger.Warn("manual close cancel failed (non-fatal) for %s/%s: %s (sl_oid=%d tp_oids=%v) — verify HL on-chain triggers",
 										sc.ID, sc.Symbol, execResult.CancelStopLossError, cancelOID, extraCancelOIDs)
+								}
+								if execResult.AlreadyFlat {
+									mu.Lock()
+									if bookHLExternalCloseFromHistory(stratState, sc.Symbol, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"), logger) {
+										trades = 1
+										detail = fmt.Sprintf("manual close on HL UI (reconciled) %.4f %s", closeQty, sc.Symbol)
+										logger.Info("Manual close already flat on HL — booked from history: %s", detail)
+									} else {
+										logger.Warn("manual close already_flat but no virtual position to book for %s/%s", sc.ID, sc.Symbol)
+									}
+									mu.Unlock()
+									break
 								}
 								if execResult.Execution != nil && execResult.Execution.Fill != nil {
 									fill := execResult.Execution.Fill
@@ -3118,6 +3133,17 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	// and the new-SL placement on partial close. The trailing-stop loop
 	// resizes the SL on its own cadence (#502).
 	partialClose := result.CloseFraction > 0 && result.CloseFraction < 1
+	if !pureClose && !partialClose && sc.Script != "" && price > 0 {
+		adjusted, err := ensureHLMinNotionalQty(sc.Script, result.Symbol, size, price)
+		if err != nil {
+			logger.Info("HL min notional sizing failed for %s: %v", result.Symbol, err)
+			return nil, false
+		}
+		if adjusted != size {
+			logger.Info("HL min notional: qty %.6f → %.6f (~$%.2f at mark $%.2f)", size, adjusted, adjusted*price, price)
+			size = adjusted
+		}
+	}
 	// flipping predicate must mirror perpsLiveOrderSize exactly — flips are
 	// only emitted under direction="both" (both directions allowed AND there's
 	// an opposite-side position to flip away from). A long-only strategy that
@@ -3177,7 +3203,8 @@ func runHyperliquidExecuteOrder(sc StrategyConfig, result *HyperliquidResult, pr
 	} else if result.CloseFraction == 1.0 {
 		logger.Info("Final-tier close %s shares coin with HL perps peers — using sized close to preserve peer exposure", result.Symbol)
 	}
-	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen, closeFullPosition, walletSnapshot, extraCancelOIDs...)
+	closeOnly := pureClose || partialClose || closeFullPosition
+	execResult, stderr, err := RunHyperliquidExecute(sc.Script, result.Symbol, side, size, slPct, cancelOID, prevPosQty, marginMode, leverageForOpen, closeFullPosition, closeOnly, walletSnapshot, extraCancelOIDs...)
 	if stderr != "" {
 		logger.Info("execute stderr: %s", stderr)
 	}
@@ -3260,11 +3287,46 @@ func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *Hyper
 	return trades, detail
 }
 
+// hyperliquidResultIsCloseLeg reports whether result is closing an existing
+// virtual position (full, partial, or flat-account reconcile) — not an open.
+func hyperliquidResultIsCloseLeg(result *HyperliquidResult, s *StrategyState) bool {
+	if result == nil || s == nil {
+		return false
+	}
+	sym := result.Symbol
+	pos := s.Positions[sym]
+	if pos == nil || pos.Quantity <= 0 {
+		return false
+	}
+	if result.CloseFraction > 0 {
+		return true
+	}
+	if result.Signal == -1 && pos.Side == "long" {
+		return true
+	}
+	if result.Signal == 1 && pos.Side == "short" {
+		return true
+	}
+	return false
+}
+
 // executeHyperliquidResultDeferredOpen applies a hyperliquid result to state.
 // Must be called under Lock. execResult is non-nil for successful live orders;
 // nil for paper mode. Live open trades are returned so the caller can run
 // same-cycle protection sync before the single INSERT.
 func executeHyperliquidResultDeferredOpen(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, logger *StrategyLogger) (int, string, *Trade) {
+	if execResult != nil && execResult.AlreadyFlat && hyperliquidResultIsCloseLeg(result, s) {
+		sym := result.Symbol
+		if sym == "" {
+			sym = hyperliquidSymbol(sc.Args)
+		}
+		if bookHLExternalCloseFromHistory(s, sym, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"), logger) {
+			detail := fmt.Sprintf("[%s] LIVE %s %s manual close on HL UI (reconciled)", sc.ID, signalStr, sym)
+			return 1, detail, nil
+		}
+		logger.Warn("already_flat close for %s but no virtual position to book", sym)
+		return 0, "", nil
+	}
 	fillPrice := price
 	var fillQty float64
 	if execResult != nil && execResult.Execution != nil && execResult.Execution.Fill != nil && execResult.Execution.Fill.AvgPx > 0 {

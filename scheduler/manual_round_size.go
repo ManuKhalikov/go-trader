@@ -3,7 +3,12 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 )
+
+// hlExchangeMinNotionalUSD is HL's $10 exchange minimum plus a $1 buffer so
+// lot rounding never pushes rounded_qty × mark below the floor (mirrors agent).
+const hlExchangeMinNotionalUSD = 11.0
 
 // HyperliquidRoundSizeResult is JSON from check_hyperliquid.py --round-size.
 type HyperliquidRoundSizeResult struct {
@@ -81,4 +86,47 @@ func validateHLLotSize(script, symbol string, qty, mark float64) error {
 		return fmt.Errorf("%s", msg)
 	}
 	return nil
+}
+
+// ceilHLQtyToMinLot rounds qty up to the next lot step (sz_decimals).
+func ceilHLQtyToMinLot(qty float64, szDecimals int) float64 {
+	if qty <= 0 || szDecimals < 0 {
+		return 0
+	}
+	step := math.Pow(10, -float64(szDecimals))
+	return math.Ceil(qty/step-1e-12) * step
+}
+
+// ensureHLMinNotionalQty bumps qty so rounded_size × mark meets HL's exchange
+// minimum. Returns the adjusted qty; logs via caller when bumped.
+func ensureHLMinNotionalQty(script, symbol string, qty, mark float64) (float64, error) {
+	if script == "" || symbol == "" || qty <= 0 || mark <= 0 {
+		return qty, nil
+	}
+	result, _, err := runHyperliquidRoundSizeFn(script, symbol, qty, mark)
+	if err != nil {
+		return 0, err
+	}
+	if result == nil {
+		return 0, fmt.Errorf("nil round-size result for %s", symbol)
+	}
+	rounded := result.RoundedSize
+	if rounded <= 0 {
+		return 0, validateHLLotSize(script, symbol, qty, mark)
+	}
+	if rounded*mark >= hlExchangeMinNotionalUSD {
+		return qty, nil
+	}
+	minQty := hlExchangeMinNotionalUSD / mark
+	bumped := ceilHLQtyToMinLot(minQty, result.SzDecimals)
+	if bumped <= rounded {
+		bumped = ceilHLQtyToMinLot(rounded+result.MinLot, result.SzDecimals)
+	}
+	if bumped*mark < hlExchangeMinNotionalUSD {
+		return 0, fmt.Errorf(
+			"cannot satisfy HL min notional $%.2f for %s at mark $%.2f (need qty >= %g)",
+			hlExchangeMinNotionalUSD, symbol, mark, minQty,
+		)
+	}
+	return bumped, nil
 }

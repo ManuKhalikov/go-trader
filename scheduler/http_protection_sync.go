@@ -9,8 +9,10 @@ import (
 )
 
 type protectionSyncBody struct {
-	StrategyID string `json:"strategy_id"`
-	Symbol     string `json:"symbol"`
+	StrategyID      string  `json:"strategy_id"`
+	Symbol          string  `json:"symbol"`
+	TPTiers         string  `json:"tp_tiers,omitempty"`
+	StopLossATRMult float64 `json:"stop_loss_atr_mult,omitempty"`
 }
 
 func (ss *StatusServer) handleProtectionSyncHTTP(w http.ResponseWriter, r *http.Request) {
@@ -133,8 +135,9 @@ func (ss *StatusServer) handleProtectionSyncHTTP(w http.ResponseWriter, r *http.
 
 	// Place TPs. slMultForSync=0: SL already armed (stopLossOID>0), placeManualProtectionInline
 	// zeroes it to avoid a duplicate stop — pass 0 explicitly so the same logic applies
-	// whether or not stopLossOID is set. tpTierOverride=nil: use strategy default tiers.
-	oids, warn, err := placeManualProtectionInline(sc, snap.side, snap.qty, snap.avgCost, snap.entryATR, 0, snap.slOID, nil)
+	// whether or not stopLossOID is set.
+	tpTierOverride := parseManualTPTiersJSON(body.TPTiers)
+	oids, warn, err := placeManualProtectionInline(sc, snap.side, snap.qty, snap.avgCost, snap.entryATR, 0, snap.slOID, tpTierOverride)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)

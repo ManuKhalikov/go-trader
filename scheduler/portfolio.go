@@ -431,7 +431,36 @@ func recordPerpsExternalClose(s *StrategyState, symbol string, closePx float64, 
 // since the close happened off-scheduler, but the coin+size match path
 // can still recover the fee.
 func recordPerpsExternalCloseWithFillFee(s *StrategyState, symbol string, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason string, logger *StrategyLogger) bool {
-	return bookPerpsCloseWithFillFee(s, symbol, closePx, fillFee, useFillFee, exchangeOrderID, reason, "External close @ mark", "External close reconciled", logger)
+	return bookPerpsCloseWithFillFee(s, symbol, closePx, fillFee, useFillFee, exchangeOrderID, reason, "manual close on HL UI (reconciled)", "hl-sync: manually closed on exchange", logger)
+}
+
+// bookHLExternalCloseFromHistory books a virtual position as externally closed
+// using userFills history when the exchange is already flat at submit time.
+func bookHLExternalCloseFromHistory(s *StrategyState, symbol, accountAddress string, logger *StrategyLogger) bool {
+	pos := s.Positions[symbol]
+	if pos == nil || pos.Quantity <= 0 {
+		return false
+	}
+	since := time.Now().UTC().Add(-hlReconcileFillLookupWindow).UnixMilli()
+	lookup, useFillFee := lookupHyperliquidFillByCoinSize(accountAddress, symbol, pos.Quantity, hlReconcileFillSizeTolerance, since)
+	closePx := pos.AvgCost
+	fillFee := 0.0
+	oid := ""
+	if useFillFee {
+		if lookup.Px > 0 {
+			closePx = lookup.Px
+		}
+		fillFee = lookup.Fee
+		if lookup.OID > 0 {
+			oid = fmt.Sprintf("%d", lookup.OID)
+		}
+		if logger != nil {
+			logger.Info("hl-sync: %s manually closed on exchange — booked from userFills @ $%.4f", symbol, closePx)
+		}
+	} else if logger != nil {
+		logger.Info("hl-sync: %s manually closed on exchange — no userFills match, booking at avg cost $%.4f", symbol, closePx)
+	}
+	return recordPerpsExternalCloseWithFillFee(s, symbol, closePx, fillFee, useFillFee, oid, "hl_sync_external", logger)
 }
 
 func recordPerpsExternalPartialCloseWithFillFee(s *StrategyState, symbol string, closeQty, closePx, fillFee float64, useFillFee bool, exchangeOrderID, reason string, logger *StrategyLogger) bool {

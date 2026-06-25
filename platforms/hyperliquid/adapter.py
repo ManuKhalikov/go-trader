@@ -172,7 +172,21 @@ def _round_perps_px(px: float, sz_decimals: int) -> float:
     log = math.floor(math.log10(abs(px)))
     sig_decimals = max(0, 5 - 1 - int(log))
     decimals = min(px_decimals, sig_decimals)
-    return round(px, decimals)
+    rounded = round(px, decimals)
+    return _nudge_off_round_cluster(rounded, sz_decimals)
+
+
+def _nudge_off_round_cluster(px: float, sz_decimals: int) -> float:
+    """Defense-in-depth: nudge prices off obvious round clusters after HL rounding."""
+    if px <= 0:
+        return px
+    px_decimals = max(0, 6 - sz_decimals)
+    tick = 10 ** (-max(0, min(px_decimals, 4)))
+    cents = round((px % 1) * 100)
+    on_cluster = cents in (0, 50) or (px >= 100 and abs(px % 10) < tick * 2)
+    if not on_cluster:
+        return px
+    return round(px + tick, px_decimals)
 
 
 def _floor_size(sz: float, sz_decimals: int) -> float:
@@ -186,6 +200,17 @@ def _floor_size(sz: float, sz_decimals: int) -> float:
 def _min_lot_size(sz_decimals: int) -> float:
     """Smallest positive order increment for an asset at ``sz_decimals``."""
     return 10 ** (-max(sz_decimals, 0))
+
+
+# HL rejects orders below $10. +$1 buffer matches agent minNotional.ts.
+HL_EXCHANGE_MIN_NOTIONAL_USD = 11.0
+
+
+def _ceil_hl_qty_to_min_lot(qty: float, sz_decimals: int) -> float:
+    step = _min_lot_size(sz_decimals)
+    if qty <= 0 or step <= 0:
+        return 0.0
+    return math.ceil(qty / step - 1e-12) * step
 
 
 def _sz_decimals_from_universe(meta: dict | None, symbol: str) -> int | None:
@@ -691,9 +716,21 @@ class HyperliquidExchangeAdapter:
         return 3
 
     def _round_open_size_or_raise(self, symbol: str, size: float, mark_px: float = 0.0) -> float:
-        """Round size to lot precision; raise with min-lot guidance when zero."""
+        """Round size to lot precision; bump to HL min notional when needed."""
         sz_decimals = self._sz_decimals(symbol)
         rounded = round(size, sz_decimals)
+        if mark_px > 0 and rounded > 0 and rounded * mark_px < HL_EXCHANGE_MIN_NOTIONAL_USD:
+            min_qty = HL_EXCHANGE_MIN_NOTIONAL_USD / mark_px
+            bumped = _ceil_hl_qty_to_min_lot(min_qty, sz_decimals)
+            if bumped <= rounded:
+                bumped = _ceil_hl_qty_to_min_lot(rounded + _min_lot_size(sz_decimals), sz_decimals)
+            if bumped * mark_px >= HL_EXCHANGE_MIN_NOTIONAL_USD:
+                print(
+                    f"HL min notional: qty {rounded} → {bumped} "
+                    f"(~${bumped * mark_px:.2f} at mark ${mark_px:.2f})",
+                    file=sys.stderr,
+                )
+                rounded = bumped
         if rounded > 0:
             return rounded
         min_lot = _min_lot_size(sz_decimals)
@@ -952,18 +989,22 @@ class HyperliquidExchangeAdapter:
     # Order execution (live mode only)
     # ─────────────────────────────────────────────
 
-    def market_open(self, symbol: str, is_buy: bool, size: float) -> dict:
+    def market_open(self, symbol: str, is_buy: bool, size: float, *, is_close_leg: bool = False) -> dict:
         """
         Place a market order to open/add to a position.
         Only available in live mode; raises RuntimeError in paper mode.
         Returns raw SDK response dict.
+
+        When ``is_close_leg`` is True, skip the HL min-notional bump — closing
+        must not inflate size beyond the intended reduce-only qty.
         """
         symbol = resolve_hl_symbol(symbol)
         if not self._exchange:
             raise RuntimeError(
                 "market_open requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
-        size = self._round_open_size_or_raise(symbol, size)
+        mark = 0.0 if is_close_leg else self.get_spot_price(symbol)
+        size = self._round_open_size_or_raise(symbol, size, mark)
         # xyz DEX (HIP-3 builder perps) has materially wider spreads than the
         # main HL perp book. Use 5% slippage to match the SDK default; 1% is
         # routinely too tight for xyz assets and causes consistent IOC failures.
@@ -998,9 +1039,9 @@ class HyperliquidExchangeAdapter:
             raise RuntimeError(
                 "limit_open requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
-        size = self._round_open_size_or_raise(symbol, size)
         if limit_px <= 0:
             raise ValueError(f"limit_px must be > 0, got {limit_px}")
+        size = self._round_open_size_or_raise(symbol, size, limit_px)
         if tif not in ("Alo", "Gtc", "Ioc"):
             raise ValueError(f"unsupported tif {tif!r}, expected 'Alo', 'Gtc' or 'Ioc'")
         sz_decimals = self._sz_decimals(symbol)
@@ -1163,6 +1204,80 @@ class HyperliquidExchangeAdapter:
                         "avg_px": avg_px,
                         "fee": fee_total,
                         "count": len(matched),
+                    }
+            attempt += 1
+            if attempt < max_retries:
+                time.sleep(retry_delay_s)
+        return {}
+
+    def lookup_fill_by_coin_size(
+        self,
+        coin: str,
+        abs_size: float,
+        since_ms: int,
+        tolerance: float = 1e-4,
+        max_retries: int = 4,
+        retry_delay_s: float = 0.5,
+    ) -> dict:
+        """Find the newest userFills close matching coin + absolute size."""
+        if not coin or abs_size <= 0 or not self._account_address:
+            return {}
+        attempt = 0
+        while attempt < max_retries:
+            try:
+                fills = self._info.user_fills_by_time(self._account_address, since_ms)
+            except _HLClientError as exc:
+                if getattr(exc, "status_code", None) == 429:
+                    return {}
+                fills = None
+            except Exception:
+                fills = None
+            if isinstance(fills, list):
+                sorted_fills = sorted(
+                    (f for f in fills if isinstance(f, dict)),
+                    key=lambda f: _safe_int(f.get("time")),
+                    reverse=True,
+                )
+                anchor_oid = None
+                anchor = None
+                for f in sorted_fills:
+                    if f.get("coin") != coin:
+                        continue
+                    sz = abs(_safe_float(f.get("sz")))
+                    if abs(sz - abs_size) > tolerance:
+                        continue
+                    anchor = f
+                    anchor_oid = _safe_int(f.get("oid"))
+                    break
+                if anchor is None:
+                    pass
+                elif anchor_oid <= 0:
+                    return {
+                        "avg_px": _safe_float(anchor.get("px")),
+                        "total_sz": abs(_safe_float(anchor.get("sz"))),
+                        "fee": _safe_float(anchor.get("fee")),
+                        "oid": 0,
+                    }
+                else:
+                    fee_total = 0.0
+                    size_total = 0.0
+                    notional_total = 0.0
+                    for f in fills:
+                        if not isinstance(f, dict):
+                            continue
+                        if _safe_int(f.get("oid")) != anchor_oid:
+                            continue
+                        sz = abs(_safe_float(f.get("sz")))
+                        px = _safe_float(f.get("px"))
+                        size_total += sz
+                        notional_total += sz * px
+                        fee_total += _safe_float(f.get("fee"))
+                    avg_px = (notional_total / size_total) if size_total > 0 else 0.0
+                    return {
+                        "avg_px": avg_px,
+                        "total_sz": size_total,
+                        "fee": fee_total,
+                        "oid": anchor_oid,
                     }
             attempt += 1
             if attempt < max_retries:

@@ -684,6 +684,81 @@ class TestCloseFullPosition:
         adapter.market_close.assert_called_once_with("ETH", sz=None)
 
 
+class TestCloseAlreadyFlat:
+    """Close leg with empty HL statuses returns already_flat for Go reconcile."""
+
+    def test_empty_statuses_sets_already_flat(self):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.market_close.return_value = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": []}},
+        }
+        mock_adapter.lookup_fill_by_coin_size.return_value = {
+            "avg_px": 3000.0,
+            "total_sz": 0.5,
+            "fee": 0.1,
+            "oid": 42,
+        }
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                return _fake_adapter_module(mock_adapter_cls)
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                mod.run_execute("ETH", "sell", 0.5, "live", close_full_position=True, close_only=True)
+
+        out = json.loads(captured.getvalue())
+        assert out.get("already_flat") is True
+        assert out["execution"]["fill"]["avg_px"] == 3000.0
+        mock_adapter.lookup_fill_by_coin_size.assert_called_once()
+
+
+class TestOpenEmptyStatusesNotAlreadyFlat:
+    """Opens without --close-only must not treat empty HL statuses as already_flat."""
+
+    def test_open_without_close_only_does_not_set_already_flat(self):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+
+        mock_adapter_cls = MagicMock()
+        mock_adapter = MagicMock()
+        mock_adapter_cls.return_value = mock_adapter
+        mock_adapter.market_open.return_value = {
+            "status": "ok",
+            "response": {"type": "order", "data": {"statuses": []}},
+        }
+
+        captured = StringIO()
+        import builtins
+        original_import = builtins.__import__
+
+        def mock_import(name, *args, **kwargs):
+            if name == "adapter":
+                return _fake_adapter_module(mock_adapter_cls)
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=mock_import):
+            with patch("sys.stdout", captured):
+                mod.run_execute(
+                    "BTC", "buy", 0.01, "live",
+                    margin_mode="isolated", leverage=5,
+                )
+
+        out = json.loads(captured.getvalue())
+        assert not out.get("already_flat"), "open leg must not set already_flat on empty statuses"
+
+
 class TestSyncProtection:
     """#601 / #604 review #1: run_sync_protection branches for OID present /
     gone-but-cancelled / gone-but-filled. The over-close hazard arises when a

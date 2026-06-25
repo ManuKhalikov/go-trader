@@ -268,7 +268,7 @@ func runManualOpen(args []string) int {
 		execResult, execStderr, execErr := RunHyperliquidExecute(
 			script, sc.Symbol, openSide,
 			resolvedOrderSize,
-			effectiveSLPct, 0, 0, sc.MarginMode, sc.Leverage, false,
+			effectiveSLPct, 0, 0, sc.MarginMode, sc.Leverage, false, false,
 			hlExecuteSnapshot{},
 		)
 		if execStderr != "" {
@@ -581,7 +581,7 @@ func runManualAdd(args []string) int {
 		execResult, execStderr, execErr := RunHyperliquidExecute(
 			sc.Script, sc.Symbol, addSide,
 			resolvedOrderSize,
-			0, 0, 0, "", 0, false,
+			0, 0, 0, "", 0, false, false,
 			hlExecuteSnapshot{},
 		)
 		if execStderr != "" {
@@ -730,7 +730,7 @@ func runManualClose(args []string) int {
 
 	execResult, stderr, execErr := RunHyperliquidExecute(
 		sc.Script, closeSymbol, closeSide, closeQty,
-		0, cancelOID, 0, "", 0, closeFullPosition, hlExecuteSnapshot{}, extraCancelOIDs...,
+		0, cancelOID, 0, "", 0, closeFullPosition, true, hlExecuteSnapshot{}, extraCancelOIDs...,
 	)
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "HL close stderr: %s\n", stderr)
@@ -750,6 +750,19 @@ func runManualClose(args []string) int {
 		fmt.Fprintf(os.Stderr,
 			"warning: manual close cancel failed (non-fatal) for %s/%s: %s (sl_oid=%d tp_oids=%v) — verify HL on-chain triggers\n",
 			strategyID, closeSymbol, execResult.CancelStopLossError, cancelOID, extraCancelOIDs)
+	}
+
+	if execResult.AlreadyFlat {
+		if bookHLExternalCloseFromHistory(ss, closeSymbol, os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS"), nil) {
+			if err := SaveStateWithDB(state, cfg, stateDB); err != nil {
+				fmt.Fprintf(os.Stderr, "error saving state after already-flat close: %v\n", err)
+				return 1
+			}
+			fmt.Printf("Position already flat on HL — booked close from history for %s/%s\n", strategyID, closeSymbol)
+			return 0
+		}
+		fmt.Fprintf(os.Stderr, "error: position already flat on HL but could not book from history\n")
+		return 1
 	}
 
 	fill := execResult.Execution
@@ -1155,6 +1168,17 @@ func resolveManualOpenOrderSize(sc StrategyConfig, size, notional, margin float6
 		return 0, mark, fmt.Errorf("resolved size is zero (size=%g notional=%g margin=%g mark=%g leverage=%g) — check --margin/--notional and strategy leverage", size, notional, margin, mark, sc.Leverage)
 	}
 	if sc.Script != "" {
+		if mark > 0 {
+			adjusted, err := ensureHLMinNotionalQty(sc.Script, coin, qty, mark)
+			if err != nil {
+				return 0, mark, err
+			}
+			if adjusted != qty {
+				fmt.Printf("[manual-open] HL min notional: qty %g → %g (~$%.2f at mark $%.2f)\n",
+					qty, adjusted, adjusted*mark, mark)
+				qty = adjusted
+			}
+		}
 		if err := validateHLLotSize(sc.Script, coin, qty, mark); err != nil {
 			return 0, mark, err
 		}

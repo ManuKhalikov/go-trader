@@ -849,7 +849,26 @@ def run_sync_protection(
         sys.exit(1)
 
 
-def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0, close_full_position=False, account_leverage=0, account_margin_mode=""):
+def _is_close_only_execute(close_full_position, close_only):
+    return close_full_position or close_only
+
+
+def _flat_close_error(err_msg: str) -> bool:
+    lower = str(err_msg).lower()
+    return any(
+        phrase in lower
+        for phrase in ("no position", "zero size", "already flat", "reduce only")
+    )
+
+
+def _history_close_fill(adapter, symbol, lookup_qty):
+    if lookup_qty <= 0:
+        return {}
+    since_ms = int(time.time() * 1000) - 24 * 60 * 60 * 1000
+    return adapter.lookup_fill_by_coin_size(symbol, lookup_qty, since_ms)
+
+
+def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_pos_qty=0.0, margin_mode="", leverage=0, close_full_position=False, close_only=False, account_leverage=0, account_margin_mode=""):
     """Place a live market order on Hyperliquid, optionally wrapping it with
     a stop-loss trigger (open) or cancelling a stale SL trigger (close).
 
@@ -883,6 +902,7 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
         symbol = resolve_hl_symbol(symbol)
 
         is_buy = side.lower() == "buy"
+        is_close_only = _is_close_only_execute(close_full_position, close_only)
 
         # Enforce margin mode + leverage before placing the order (#486).
         # Fail closed: if HL rejects this we abort the order rather than
@@ -974,33 +994,56 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
             # without specifying a size so rounding drift never leaves dust.
             result = adapter.market_close(symbol, sz=None)
         else:
-            result = adapter.market_open(symbol, is_buy, size)
+            result = adapter.market_open(symbol, is_buy, size, is_close_leg=is_close_only)
 
         # Extract fill info from SDK response structure:
         # {"status": "ok", "response": {"type": "order", "data": {"statuses": [...]}}}
         fill = {}
+        already_flat = False
         statuses = result.get("response", {}).get("data", {}).get("statuses", [])
-        if statuses:
+        if is_close_only and not statuses:
+            already_flat = True
+        elif statuses:
             status = statuses[0] if isinstance(statuses[0], dict) else {}
             # Surface HL order rejections as a real error rather than silent zero fill.
             # An IOC that can't cross the spread returns {"error": "..."} in statuses,
             # not {"filled": {...}} — without this check the error is silently dropped.
             if "error" in status:
-                raise RuntimeError(f"HL order rejected: {status['error']}")
-            filled = status.get("filled", {})
-            fill = {
-                "avg_px": float(filled.get("avgPx", 0) or 0),
-                "total_sz": float(filled.get("totalSz", 0) or 0),
-            }
-            # Extract exchange order ID if present
-            oid = filled.get("oid")
-            if oid is not None:
-                fill["oid"] = int(oid)
-            # Extract fee if present in response (HL placeOrder response
-            # currently omits this — keep the read for forward compat).
-            fee = filled.get("fee")
-            if fee is not None:
-                fill["fee"] = float(fee)
+                if is_close_only and _flat_close_error(status["error"]):
+                    already_flat = True
+                else:
+                    raise RuntimeError(f"HL order rejected: {status['error']}")
+            if not already_flat:
+                filled = status.get("filled", {})
+                fill = {
+                    "avg_px": float(filled.get("avgPx", 0) or 0),
+                    "total_sz": float(filled.get("totalSz", 0) or 0),
+                }
+                # Extract exchange order ID if present
+                oid = filled.get("oid")
+                if oid is not None:
+                    fill["oid"] = int(oid)
+                # Extract fee if present in response (HL placeOrder response
+                # currently omits this — keep the read for forward compat).
+                fee = filled.get("fee")
+                if fee is not None:
+                    fill["fee"] = float(fee)
+
+        if already_flat:
+            lookup_qty = size if size > 0 else prev_pos_qty
+            hist = _history_close_fill(adapter, symbol, lookup_qty)
+            if hist:
+                fill = {
+                    "avg_px": float(hist.get("avg_px", 0) or 0),
+                    "total_sz": float(hist.get("total_sz", 0) or 0),
+                    "fee": float(hist.get("fee", 0) or 0),
+                }
+                if hist.get("oid"):
+                    fill["oid"] = int(hist["oid"])
+            print(
+                f"[INFO] close already flat on HL for {symbol} — booked from history when available",
+                file=sys.stderr,
+            )
 
         # The HL placeOrder response does not include `fee`; the real fee is
         # only available via the userFills indexer endpoint (#585). Query it
@@ -1085,6 +1128,8 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
             out["stop_loss_error"] = sl_err
         if sl_filled_immediately:
             out["stop_loss_filled_immediately"] = True
+        if already_flat:
+            out["already_flat"] = True
         print(json.dumps(out, cls=SafeEncoder))
 
     except Exception as e:
@@ -1655,6 +1700,8 @@ def main():
         parser.add_argument("--size", type=float, default=0.0)
         parser.add_argument("--close-full-position", action="store_true", default=False,
                             help="close entire on-chain residual via market_close(sz=None); mutually exclusive with --size (#592)")
+        parser.add_argument("--close-only", action="store_true", default=False,
+                            help="reduce-only close leg; enables already_flat reconcile when HL is flat (#manual-close)")
         parser.add_argument("--mode", default="live")
         parser.add_argument("--stop-loss-pct", type=float, default=0.0,
                             help="place a reduce-only SL trigger this pct away from fill (#412)")
@@ -1683,6 +1730,7 @@ def main():
                     prev_pos_qty=args.prev_pos_qty,
                     margin_mode=args.margin_mode, leverage=args.leverage,
                     close_full_position=args.close_full_position,
+                    close_only=args.close_only,
                     account_leverage=args.account_leverage,
                     account_margin_mode=args.account_margin_mode)
     elif "--limit-open" in sys.argv:

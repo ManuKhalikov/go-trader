@@ -851,7 +851,16 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 			closePx = statePos.AvgCost
 			logger.Info("hl-sync: %s external close has no price source — booking at avg cost $%.4f (zero PnL)", sym, closePx)
 		}
-		if !recordPerpsExternalCloseWithFillFee(stratState, sym, closePx, lookupExt.Fee, useFillFeeExt, "", "hl_sync_external", logger) {
+		if useFillFeeExt && lookupExt.Px > 0 {
+			logger.Info("hl-sync: %s manually closed on exchange — booked from userFills @ $%.4f", sym, closePx)
+		} else {
+			logger.Info("hl-sync: %s manually closed on exchange — booking at $%.4f (no userFills match)", sym, closePx)
+		}
+		oidStr := ""
+		if lookupExt.OID > 0 {
+			oidStr = strconv.FormatInt(lookupExt.OID, 10)
+		}
+		if !recordPerpsExternalCloseWithFillFee(stratState, sym, closePx, lookupExt.Fee, useFillFeeExt, oidStr, "hl_sync_external", logger) {
 			recordClosedPosition(stratState, statePos, 0, 0, "hl_sync_external", time.Now().UTC())
 			delete(stratState.Positions, sym)
 			clearATRMultMissingEntryATRWarningOnHLPerpsClose(stratState, sym)
@@ -897,6 +906,59 @@ func syncHyperliquidAccountPositions(hlStrategies []StrategyConfig, state *AppSt
 	// since no notifier is plumbed through here.
 	changed, _, _ := reconcileHyperliquidAccountPositions(hlStrategies, hlStrategies, state, mu, logMgr, positions, nil, accountAddr, nil, false)
 	return changed
+}
+
+// hlVirtualOnChainMismatched reports whether the strategy's virtual position
+// for its configured coin differs from the pre-fetched on-chain snapshot.
+// Matches the predicate used by buildCachedHyperliquidReconcileFillResolver.
+func hlVirtualOnChainMismatched(sc StrategyConfig, ss *StrategyState, positions []HLPosition) bool {
+	if ss == nil {
+		return false
+	}
+	sym := hyperliquidSymbol(sc.Args)
+	if sym == "" {
+		return false
+	}
+	pos := ss.Positions[sym]
+	if pos == nil || pos.Quantity <= 0 {
+		return false
+	}
+	onChainSize := 0.0
+	present := false
+	for _, p := range positions {
+		if p.Coin == sym {
+			onChainSize = p.Size
+			present = true
+			break
+		}
+	}
+	return !present || math.Abs(math.Abs(onChainSize)-pos.Quantity) > 1e-9
+}
+
+// appendHLReconcileMismatched unions any live HL strategy whose virtual
+// position mismatches on-chain into due, so external closes (e.g. manual HL UI
+// flatten) are booked on the next cycle even when the strategy isn't scheduled.
+func appendHLReconcileMismatched(due, all []StrategyConfig, state *AppState, mu *sync.RWMutex, positions []HLPosition) []StrategyConfig {
+	if len(all) == 0 {
+		return due
+	}
+	inDue := make(map[string]bool, len(due))
+	for _, sc := range due {
+		inDue[sc.ID] = true
+	}
+	mu.RLock()
+	defer mu.RUnlock()
+	for _, sc := range all {
+		if inDue[sc.ID] {
+			continue
+		}
+		ss := state.Strategies[sc.ID]
+		if hlVirtualOnChainMismatched(sc, ss, positions) {
+			due = append(due, sc)
+			inDue[sc.ID] = true
+		}
+	}
+	return due
 }
 
 // reconcileHyperliquidAccountPositions reconciles pre-fetched on-chain positions

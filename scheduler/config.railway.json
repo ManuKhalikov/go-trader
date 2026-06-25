@@ -40,15 +40,15 @@
       "leverage": 20,
       "margin_mode": "isolated",
       "direction": "both",
-      "stop_loss_atr_mult": 2.0,
+      "stop_loss_atr_mult": 1.5,
       "close_strategies": [
         {
           "name": "tiered_tp_atr_live",
           "params": {
             "tiers": [
-              { "atr_mult": 1.0, "fraction": 0.40 },
-              { "atr_mult": 2.0, "fraction": 0.35 },
-              { "atr_mult": 3.0, "fraction": 0.25 }
+              { "atr_mult": 1.5, "fraction": 0.40 },
+              { "atr_mult": 3.5, "fraction": 0.35 },
+              { "atr_mult": 5.0, "fraction": 0.25 }
             ]
           }
         }
@@ -66,15 +66,15 @@
       "leverage": 20,
       "margin_mode": "isolated",
       "direction": "both",
-      "stop_loss_atr_mult": 2.0,
+      "stop_loss_atr_mult": 1.5,
       "close_strategies": [
         {
           "name": "tiered_tp_atr_live",
           "params": {
             "tiers": [
-              { "atr_mult": 1.0, "fraction": 0.40 },
-              { "atr_mult": 2.0, "fraction": 0.35 },
-              { "atr_mult": 3.0, "fraction": 0.25 }
+              { "atr_mult": 1.5, "fraction": 0.40 },
+              { "atr_mult": 3.5, "fraction": 0.35 },
+              { "atr_mult": 5.0, "fraction": 0.25 }
             ]
           }
         }
@@ -92,15 +92,15 @@
       "leverage": 20,
       "margin_mode": "isolated",
       "direction": "both",
-      "stop_loss_atr_mult": 2.0,
+      "stop_loss_atr_mult": 1.5,
       "close_strategies": [
         {
           "name": "tiered_tp_atr_live",
           "params": {
             "tiers": [
-              { "atr_mult": 1.0, "fraction": 0.40 },
-              { "atr_mult": 2.0, "fraction": 0.35 },
-              { "atr_mult": 3.0, "fraction": 0.25 }
+              { "atr_mult": 1.5, "fraction": 0.40 },
+              { "atr_mult": 3.5, "fraction": 0.35 },
+              { "atr_mult": 5.0, "fraction": 0.25 }
             ]
           }
         }
@@ -118,15 +118,15 @@
       "leverage": 20,
       "margin_mode": "isolated",
       "direction": "both",
-      "stop_loss_atr_mult": 2.0,
+      "stop_loss_atr_mult": 1.5,
       "close_strategies": [
         {
           "name": "tiered_tp_atr_live",
           "params": {
             "tiers": [
-              { "atr_mult": 1.0, "fraction": 0.40 },
-              { "atr_mult": 2.0, "fraction": 0.35 },
-              { "atr_mult": 3.0, "fraction": 0.25 }
+              { "atr_mult": 1.5, "fraction": 0.40 },
+              { "atr_mult": 3.5, "fraction": 0.35 },
+              { "atr_mult": 5.0, "fraction": 0.25 }
             ]
           }
         }
@@ -144,15 +144,15 @@
       "leverage": 20,
       "margin_mode": "isolated",
       "direction": "both",
-      "stop_loss_atr_mult": 2.0,
+      "stop_loss_atr_mult": 1.5,
       "close_strategies": [
         {
           "name": "tiered_tp_atr_live",
           "params": {
             "tiers": [
-              { "atr_mult": 1.0, "fraction": 0.40 },
-              { "atr_mult": 2.0, "fraction": 0.35 },
-              { "atr_mult": 3.0, "fraction": 0.25 }
+              { "atr_mult": 1.5, "fraction": 0.40 },
+              { "atr_mult": 3.5, "fraction": 0.35 },
+              { "atr_mult": 5.0, "fraction": 0.25 }
             ]
           }
         }
@@ -170,15 +170,15 @@
       "leverage": 20,
       "margin_mode": "isolated",
       "direction": "both",
-      "stop_loss_atr_mult": 2.0,
+      "stop_loss_atr_mult": 1.5,
       "close_strategies": [
         {
           "name": "tiered_tp_atr_live",
           "params": {
             "tiers": [
-              { "atr_mult": 1.0, "fraction": 0.40 },
-              { "atr_mult": 2.0, "fraction": 0.35 },
-              { "atr_mult": 3.0, "fraction": 0.25 }
+              { "atr_mult": 1.5, "fraction": 0.40 },
+              { "atr_mult": 3.5, "fraction": 0.35 },
+              { "atr_mult": 5.0, "fraction": 0.25 }
             ]
           }
         }
@@ -196,15 +196,15 @@
       "leverage": 20,
       "margin_mode": "isolated",
       "direction": "both",
-      "stop_loss_atr_mult": 2.0,
+      "stop_loss_atr_mult": 1.5,
       "close_strategies": [
         {
           "name": "tiered_tp_atr_live",
           "params": {
             "tiers": [
-              { "atr_mult": 1.0, "fraction": 0.40 },
-              { "atr_mult": 2.0, "fraction": 0.35 },
-              { "atr_mult": 3.0, "fraction": 0.25 }
+              { "atr_mult": 1.5, "fraction": 0.40 },
+              { "atr_mult": 3.5, "fraction": 0.35 },
+              { "atr_mult": 5.0, "fraction": 0.25 }
             ]
           }
         }
@@ -222,15 +222,15 @@
       "leverage": 20,
       "margin_mode": "isolated",
       "direction": "both",
-      "stop_loss_atr_mult": 2.0,
+      "stop_loss_atr_mult": 1.5,
       "close_strategies": [
         {
           "name": "tiered_tp_atr_live",
           "params": {
             "tiers": [
-              { "atr_mult": 1.0, "fraction": 0.40 },
-              { "atr_mult": 2.0, "fraction": 0.35 },
-              { "atr_mult": 3.0, "fraction": 0.25 }
+              { "atr_mult": 1.5, "fraction": 0.40 },
+              { "atr_mult": 3.5, "fraction": 0.35 },
+              { "atr_mult": 5.0, "fraction": 0.25 }
             ]
           }
         }
@@ -248,15 +248,15 @@
       "leverage": 20,
       "margin_mode": "isolated",
       "direction": "both",
-      "stop_loss_atr_mult": 2.0,
+      "stop_loss_atr_mult": 1.5,
       "close_strategies": [
         {
           "name": "tiered_tp_atr_live",
           "params": {
             "tiers": [
-              { "atr_mult": 1.0, "fraction": 0.40 },
-              { "atr_mult": 2.0, "fraction": 0.35 },
-              { "atr_mult": 3.0, "fraction": 0.25 }
+              { "atr_mult": 1.5, "fraction": 0.40 },
+              { "atr_mult": 3.5, "fraction": 0.35 },
+              { "atr_mult": 5.0, "fraction": 0.25 }
             ]
           }
         }

@@ -338,7 +338,7 @@ func canonicalizeTierObject(m map[string]interface{}) map[string]interface{} {
 	out := make(map[string]interface{}, len(m))
 	for k, v := range m {
 		switch k {
-		case "atr", "multiple":
+		case "atr", "multiple", "atr_mult":
 			if _, has := out["atr_multiple"]; !has {
 				out["atr_multiple"] = v
 			}

@@ -1030,3 +1030,15 @@ class TestHIP3DexSupport:
         mock_info.asset_to_sz_decimals = {"BTC": 5}
         assert adapter._sz_decimals("NVDA") == 3
         assert adapter._sz_decimals("xyz:NVDA") == 3
+
+
+class TestHLMinNotionalRounding:
+    def test_round_open_size_bumps_below_exchange_min(self):
+        mock_info = MagicMock()
+        mock_info.asset_to_sz_decimals = {"BTC": 5}
+        mock_info_cls = MagicMock(return_value=mock_info)
+        mod = _load_hl_adapter(mock_info_cls=mock_info_cls)
+        adapter = mod.HyperliquidExchangeAdapter()
+        adapter._info = mock_info
+        rounded = adapter._round_open_size_or_raise("BTC", 0.0002, 40000.0)
+        assert rounded * 40000.0 >= mod.HL_EXCHANGE_MIN_NOTIONAL_USD

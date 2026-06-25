@@ -87,6 +87,10 @@ type HyperliquidExecuteResult struct {
 	CancelStopLossSucceeded   bool                  `json:"cancel_stop_loss_succeeded,omitempty"`   // SL cancel went through (set even if subsequent open failed) so caller can clear stale pos.StopLossOID (#421)
 	StopLossError             string                `json:"stop_loss_error,omitempty"`              // non-fatal: SL placement after fill failed (#412)
 	StopLossFilledImmediately bool                  `json:"stop_loss_filled_immediately,omitempty"` // SL trigger filled at submit (price already through the level) — position is flat on-chain (#421)
+	// AlreadyFlat is set when a close leg finds no on-chain position at submit
+	// time (manual HL UI close, eventual-consistency window). Go books virtual
+	// state from userFills history instead of treating this as an error.
+	AlreadyFlat bool `json:"already_flat,omitempty"`
 }
 
 // HyperliquidStopLossUpdateResult is the JSON output from check_hyperliquid.py
@@ -328,7 +332,7 @@ type hlExecuteSnapshot struct {
 	AccountMarginMode string // "isolated" | "cross" (empty == unknown)
 }
 
-func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) []string {
+func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition, closeOnly bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) []string {
 	args := []string{
 		"--execute",
 		fmt.Sprintf("--symbol=%s", symbol),
@@ -339,6 +343,9 @@ func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64,
 		args = append(args, "--close-full-position")
 	} else {
 		args = append(args, fmt.Sprintf("--size=%g", size))
+	}
+	if closeOnly {
+		args = append(args, "--close-only")
 	}
 	if stopLossPct > 0 {
 		args = append(args, fmt.Sprintf("--stop-loss-pct=%g", stopLossPct))
@@ -372,8 +379,8 @@ func buildHyperliquidExecuteArgs(symbol, side string, size, stopLossPct float64,
 
 // RunHyperliquidExecute runs check_hyperliquid.py in execute mode (live orders).
 // See buildHyperliquidExecuteArgs for argv-contract details.
-func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
-	args := buildHyperliquidExecuteArgs(symbol, side, size, stopLossPct, cancelStopLossOID, prevPosQty, marginMode, leverage, closeFullPosition, snapshot, extraCancelOIDs...)
+func RunHyperliquidExecute(script, symbol, side string, size, stopLossPct float64, cancelStopLossOID int64, prevPosQty float64, marginMode string, leverage float64, closeFullPosition, closeOnly bool, snapshot hlExecuteSnapshot, extraCancelOIDs ...int64) (*HyperliquidExecuteResult, string, error) {
+	args := buildHyperliquidExecuteArgs(symbol, side, size, stopLossPct, cancelStopLossOID, prevPosQty, marginMode, leverage, closeFullPosition, closeOnly, snapshot, extraCancelOIDs...)
 	stdout, stderr, err := runPythonSideEffect(script, args)
 	return parseHyperliquidExecuteOutput(stdout, string(stderr), err)
 }
