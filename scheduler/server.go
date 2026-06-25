@@ -203,6 +203,7 @@ func (ss *StatusServer) Start(port int) {
 	mux.HandleFunc("/manual-open", ss.handleManualOpenHTTP)
 	mux.HandleFunc("/manual-close", ss.handleManualCloseHTTP)
 	mux.HandleFunc("/emergency-close", ss.handleEmergencyCloseHTTP)
+	mux.HandleFunc("/protection-sync", ss.handleProtectionSyncHTTP)
 
 	listener, boundPort, err := bindWithFallback(port, statusPortMaxAttempts)
 	if err != nil {
