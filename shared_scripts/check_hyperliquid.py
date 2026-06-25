@@ -979,25 +979,28 @@ def run_execute(symbol, side, size, mode, stop_loss_pct=0.0, cancel_oid=0, prev_
         # Extract fill info from SDK response structure:
         # {"status": "ok", "response": {"type": "order", "data": {"statuses": [...]}}}
         fill = {}
-        try:
-            statuses = result.get("response", {}).get("data", {}).get("statuses", [])
-            if statuses:
-                filled = statuses[0].get("filled", {})
-                fill = {
-                    "avg_px": float(filled.get("avgPx", 0) or 0),
-                    "total_sz": float(filled.get("totalSz", 0) or 0),
-                }
-                # Extract exchange order ID if present
-                oid = filled.get("oid")
-                if oid is not None:
-                    fill["oid"] = int(oid)
-                # Extract fee if present in response (HL placeOrder response
-                # currently omits this — keep the read for forward compat).
-                fee = filled.get("fee")
-                if fee is not None:
-                    fill["fee"] = float(fee)
-        except Exception:
-            pass
+        statuses = result.get("response", {}).get("data", {}).get("statuses", [])
+        if statuses:
+            status = statuses[0] if isinstance(statuses[0], dict) else {}
+            # Surface HL order rejections as a real error rather than silent zero fill.
+            # An IOC that can't cross the spread returns {"error": "..."} in statuses,
+            # not {"filled": {...}} — without this check the error is silently dropped.
+            if "error" in status:
+                raise RuntimeError(f"HL order rejected: {status['error']}")
+            filled = status.get("filled", {})
+            fill = {
+                "avg_px": float(filled.get("avgPx", 0) or 0),
+                "total_sz": float(filled.get("totalSz", 0) or 0),
+            }
+            # Extract exchange order ID if present
+            oid = filled.get("oid")
+            if oid is not None:
+                fill["oid"] = int(oid)
+            # Extract fee if present in response (HL placeOrder response
+            # currently omits this — keep the read for forward compat).
+            fee = filled.get("fee")
+            if fee is not None:
+                fill["fee"] = float(fee)
 
         # The HL placeOrder response does not include `fee`; the real fee is
         # only available via the userFills indexer endpoint (#585). Query it

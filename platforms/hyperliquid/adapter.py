@@ -964,7 +964,11 @@ class HyperliquidExchangeAdapter:
                 "market_open requires live mode (set HYPERLIQUID_SECRET_KEY)"
             )
         size = self._round_open_size_or_raise(symbol, size)
-        return self._exchange.market_open(symbol, is_buy, size, None, 0.01)
+        # xyz DEX (HIP-3 builder perps) has materially wider spreads than the
+        # main HL perp book. Use 5% slippage to match the SDK default; 1% is
+        # routinely too tight for xyz assets and causes consistent IOC failures.
+        slippage = 0.05 if symbol.startswith("xyz:") else 0.01
+        return self._exchange.market_open(symbol, is_buy, size, None, slippage)
 
     def limit_open(
         self,
