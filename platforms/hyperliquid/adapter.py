@@ -570,12 +570,41 @@ class HyperliquidExchangeAdapter:
                 wallet = eth_account.Account.from_key(secret)
                 account_addr = addr or wallet.address
                 self._account_address = account_addr
-                self._exchange = _HLExchange(
-                    wallet,
-                    base_url=base_url,
-                    account_address=account_addr,
-                    perp_dexs=_HL_PERP_DEXS,
-                )
+                # The SDK's Exchange.__init__ always calls perp_dexs() (a network POST)
+                # regardless of whether meta/spot_meta are provided, which can hit HL's
+                # 429 rate limit under burst load. Retry with backoff before surfacing to
+                # the executor's outer retry queue — HL rate limits are typically brief.
+                _last_exc: Exception | None = None
+                for _attempt in range(3):
+                    try:
+                        self._exchange = _HLExchange(
+                            wallet,
+                            base_url=base_url,
+                            account_address=account_addr,
+                            perp_dexs=_HL_PERP_DEXS,
+                        )
+                        _last_exc = None
+                        break
+                    except Exception as _exc:
+                        _is_429 = (
+                            isinstance(_exc, _HLClientError)
+                            and getattr(_exc, "status_code", None) == 429
+                        ) or "429" in str(_exc)
+                        if _is_429 and _attempt < 2:
+                            _delay = 5 * (_attempt + 1)
+                            print(
+                                f"[WARN] HL Exchange init rate-limited"
+                                f" (attempt {_attempt + 1}/3);"
+                                f" retrying in {_delay}s",
+                                file=sys.stderr,
+                            )
+                            time.sleep(_delay)
+                            _last_exc = _exc
+                        else:
+                            _last_exc = _exc
+                            break
+                if _last_exc is not None:
+                    raise _last_exc
             except Exception as e:
                 raise RuntimeError(
                     f"Failed to initialize Hyperliquid Exchange client: {e}"
