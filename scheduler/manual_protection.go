@@ -144,7 +144,7 @@ func parseManualTPTiersJSON(raw string) []hlProtectionTier {
 		fmt.Fprintf(os.Stderr, "[manual-open] --tp-tiers parsed zero valid tiers\n")
 		return nil
 	}
-	return finalizeProtectionTiers(tiers)
+	return normalizeProtectionTierFractions(tiers)
 }
 
 // manualOpenCleanupCloseFn is the close path used by attemptManualOpenCleanup.

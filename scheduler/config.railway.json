@@ -45,10 +45,10 @@
         {
           "name": "tiered_tp_atr_live",
           "params": {
-            "tiers": [
-              { "atr_mult": 1.5, "fraction": 0.40 },
-              { "atr_mult": 3.5, "fraction": 0.35 },
-              { "atr_mult": 5.0, "fraction": 0.25 }
+            "tp_tiers": [
+              { "atr_multiple": 1.5, "close_fraction": 0.40 },
+              { "atr_multiple": 3.5, "close_fraction": 0.75 },
+              { "atr_multiple": 5.0, "close_fraction": 1.0 }
             ]
           }
         }
@@ -71,10 +71,10 @@
         {
           "name": "tiered_tp_atr_live",
           "params": {
-            "tiers": [
-              { "atr_mult": 1.5, "fraction": 0.40 },
-              { "atr_mult": 3.5, "fraction": 0.35 },
-              { "atr_mult": 5.0, "fraction": 0.25 }
+            "tp_tiers": [
+              { "atr_multiple": 1.5, "close_fraction": 0.40 },
+              { "atr_multiple": 3.5, "close_fraction": 0.75 },
+              { "atr_multiple": 5.0, "close_fraction": 1.0 }
             ]
           }
         }
@@ -97,10 +97,10 @@
         {
           "name": "tiered_tp_atr_live",
           "params": {
-            "tiers": [
-              { "atr_mult": 1.5, "fraction": 0.40 },
-              { "atr_mult": 3.5, "fraction": 0.35 },
-              { "atr_mult": 5.0, "fraction": 0.25 }
+            "tp_tiers": [
+              { "atr_multiple": 1.5, "close_fraction": 0.40 },
+              { "atr_multiple": 3.5, "close_fraction": 0.75 },
+              { "atr_multiple": 5.0, "close_fraction": 1.0 }
             ]
           }
         }
@@ -123,10 +123,10 @@
         {
           "name": "tiered_tp_atr_live",
           "params": {
-            "tiers": [
-              { "atr_mult": 1.5, "fraction": 0.40 },
-              { "atr_mult": 3.5, "fraction": 0.35 },
-              { "atr_mult": 5.0, "fraction": 0.25 }
+            "tp_tiers": [
+              { "atr_multiple": 1.5, "close_fraction": 0.40 },
+              { "atr_multiple": 3.5, "close_fraction": 0.75 },
+              { "atr_multiple": 5.0, "close_fraction": 1.0 }
             ]
           }
         }
@@ -149,10 +149,10 @@
         {
           "name": "tiered_tp_atr_live",
           "params": {
-            "tiers": [
-              { "atr_mult": 1.5, "fraction": 0.40 },
-              { "atr_mult": 3.5, "fraction": 0.35 },
-              { "atr_mult": 5.0, "fraction": 0.25 }
+            "tp_tiers": [
+              { "atr_multiple": 1.5, "close_fraction": 0.40 },
+              { "atr_multiple": 3.5, "close_fraction": 0.75 },
+              { "atr_multiple": 5.0, "close_fraction": 1.0 }
             ]
           }
         }
@@ -175,10 +175,10 @@
         {
           "name": "tiered_tp_atr_live",
           "params": {
-            "tiers": [
-              { "atr_mult": 1.5, "fraction": 0.40 },
-              { "atr_mult": 3.5, "fraction": 0.35 },
-              { "atr_mult": 5.0, "fraction": 0.25 }
+            "tp_tiers": [
+              { "atr_multiple": 1.5, "close_fraction": 0.40 },
+              { "atr_multiple": 3.5, "close_fraction": 0.75 },
+              { "atr_multiple": 5.0, "close_fraction": 1.0 }
             ]
           }
         }
@@ -201,10 +201,10 @@
         {
           "name": "tiered_tp_atr_live",
           "params": {
-            "tiers": [
-              { "atr_mult": 1.5, "fraction": 0.40 },
-              { "atr_mult": 3.5, "fraction": 0.35 },
-              { "atr_mult": 5.0, "fraction": 0.25 }
+            "tp_tiers": [
+              { "atr_multiple": 1.5, "close_fraction": 0.40 },
+              { "atr_multiple": 3.5, "close_fraction": 0.75 },
+              { "atr_multiple": 5.0, "close_fraction": 1.0 }
             ]
           }
         }
@@ -227,10 +227,10 @@
         {
           "name": "tiered_tp_atr_live",
           "params": {
-            "tiers": [
-              { "atr_mult": 1.5, "fraction": 0.40 },
-              { "atr_mult": 3.5, "fraction": 0.35 },
-              { "atr_mult": 5.0, "fraction": 0.25 }
+            "tp_tiers": [
+              { "atr_multiple": 1.5, "close_fraction": 0.40 },
+              { "atr_multiple": 3.5, "close_fraction": 0.75 },
+              { "atr_multiple": 5.0, "close_fraction": 1.0 }
             ]
           }
         }
@@ -253,10 +253,10 @@
         {
           "name": "tiered_tp_atr_live",
           "params": {
-            "tiers": [
-              { "atr_mult": 1.5, "fraction": 0.40 },
-              { "atr_mult": 3.5, "fraction": 0.35 },
-              { "atr_mult": 5.0, "fraction": 0.25 }
+            "tp_tiers": [
+              { "atr_multiple": 1.5, "close_fraction": 0.40 },
+              { "atr_multiple": 3.5, "close_fraction": 0.75 },
+              { "atr_multiple": 5.0, "close_fraction": 1.0 }
             ]
           }
         }

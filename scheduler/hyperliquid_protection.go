@@ -127,10 +127,11 @@ func strategyTPTiersForRegime(sc StrategyConfig, regime string) []hlProtectionTi
 			}
 			sel, _ := closeTierListParam(scalar)
 			tiers := parseHLProtectionTiers(sel)
+			tiers = normalizeProtectionTierFractions(tiers)
 			if len(tiers) < 2 {
 				return nil
 			}
-			return finalizeProtectionTiers(tiers)
+			return tiers
 		}
 		if v, ok := closeTierListParam(ref.Params); ok {
 			raw = v
@@ -148,20 +149,22 @@ func strategyTPTiersForRegime(sc StrategyConfig, regime string) []hlProtectionTi
 	if regimeAware {
 		// Resolve regime-aware tier specs against the runtime regime label.
 		tiers := resolveRegimeTPTiers(raw, regime)
+		tiers = normalizeProtectionTierFractions(tiers)
 		if len(tiers) < 2 {
 			return nil
 		}
-		return finalizeProtectionTiers(tiers)
+		return tiers
 	}
 	// Legacy scalar tiered_tp_atr*.
 	tiers := parseHLProtectionTiers(raw)
 	if len(tiers) == 0 {
 		tiers = defaultHLProtectionTiers()
 	}
+	tiers = normalizeProtectionTierFractions(tiers)
 	if len(tiers) < 2 {
 		return nil
 	}
-	return finalizeProtectionTiers(tiers)
+	return tiers
 }
 
 // defaultHLProtectionTiers is the canonical fallback tier ladder used when a
@@ -194,6 +197,38 @@ func finalizeProtectionTiers(tiers []hlProtectionTier) []hlProtectionTier {
 	}
 	tiers[len(tiers)-1].Fraction = 1
 	return tiers
+}
+
+// normalizeProtectionTierFractions accepts either cumulative fractions (0.4, 0.75, 1.0)
+// or per-tier deltas from the Roundtable agent (0.4, 0.35, 0.25) and returns the
+// cumulative shape required by sync-protection.
+func normalizeProtectionTierFractions(tiers []hlProtectionTier) []hlProtectionTier {
+	if len(tiers) == 0 {
+		return nil
+	}
+	clone := make([]hlProtectionTier, len(tiers))
+	copy(clone, tiers)
+	if out := finalizeProtectionTiers(clone); out != nil {
+		return out
+	}
+	sum := 0.0
+	for _, t := range tiers {
+		if t.Multiple <= 0 || t.Fraction <= 0 {
+			return nil
+		}
+		sum += t.Fraction
+	}
+	if sum <= 0 || sum > 1.01 {
+		return nil
+	}
+	sort.SliceStable(tiers, func(i, j int) bool { return tiers[i].Multiple < tiers[j].Multiple })
+	cumulative := 0.0
+	out := make([]hlProtectionTier, len(tiers))
+	for i, t := range tiers {
+		cumulative += t.Fraction / sum
+		out[i] = hlProtectionTier{Multiple: t.Multiple, Fraction: cumulative}
+	}
+	return finalizeProtectionTiers(out)
 }
 
 type hlProtectionTier struct {
@@ -255,10 +290,22 @@ func parseHLProtectionTiers(raw interface{}) []hlProtectionTier {
 		}
 		multiple, mErr := floatFromAnyChecked(m["atr_multiple"])
 		if mErr != nil {
+			if v, err2 := floatFromAnyChecked(m["atr_mult"]); err2 == nil {
+				multiple = v
+				mErr = nil
+			}
+		}
+		if mErr != nil {
 			fmt.Printf("[WARN] hl-protection: tier[%d] atr_multiple invalid: %v — tier skipped\n", idx, mErr)
 			continue
 		}
 		fraction, fErr := floatFromAnyChecked(m["close_fraction"])
+		if fErr != nil {
+			if v, err2 := floatFromAnyChecked(m["fraction"]); err2 == nil {
+				fraction = v
+				fErr = nil
+			}
+		}
 		if fErr != nil {
 			fmt.Printf("[WARN] hl-protection: tier[%d] close_fraction/fraction invalid: %v — tier skipped\n", idx, fErr)
 			continue

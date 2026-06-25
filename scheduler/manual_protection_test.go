@@ -242,3 +242,29 @@ func TestAttemptManualOpenCleanup_NilResultNoError(t *testing.T) {
 		t.Errorf("msg should mention nil result; got %q", msg)
 	}
 }
+
+func TestParseManualTPTiersJSON_DeltaFractions(t *testing.T) {
+	raw := `[{"atr_mult":1.5,"fraction":0.4},{"atr_mult":3.5,"fraction":0.35},{"atr_mult":5.0,"fraction":0.25}]`
+	tiers := parseManualTPTiersJSON(raw)
+	if len(tiers) != 3 {
+		t.Fatalf("tiers len = %d, want 3", len(tiers))
+	}
+	want := []float64{0.4, 0.75, 1.0}
+	for i, frac := range want {
+		if tiers[i].Fraction != frac {
+			t.Errorf("tier[%d].Fraction = %g, want %g", i, tiers[i].Fraction, frac)
+		}
+	}
+}
+
+func TestNormalizeProtectionTierFractions_CumulativePassthrough(t *testing.T) {
+	in := []hlProtectionTier{
+		{Multiple: 1.5, Fraction: 0.4},
+		{Multiple: 3.5, Fraction: 0.75},
+		{Multiple: 5.0, Fraction: 1.0},
+	}
+	out := normalizeProtectionTierFractions(in)
+	if len(out) != 3 || out[2].Fraction != 1.0 {
+		t.Fatalf("normalize cumulative passthrough: got %+v", out)
+	}
+}

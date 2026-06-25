@@ -31,6 +31,9 @@ func closeTierListParam(params map[string]interface{}) (interface{}, bool) {
 	if v, ok := params["tp_tiers"]; ok {
 		return v, true
 	}
+	if v, ok := params["tiers"]; ok {
+		return v, true
+	}
 	return nil, false
 }
 
