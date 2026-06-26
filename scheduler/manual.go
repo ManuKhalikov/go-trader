@@ -381,8 +381,12 @@ func runManualOpen(args []string) int {
 			stopLossTriggerPx = resolvedFillPrice + effectiveATRMult*entryATR
 		}
 		if stopLossTriggerPx > 0 {
-			const slMaxAttempts = 3
-			const slRetryDelay = 4 * time.Second
+			slMaxAttempts := 3
+			if *signalID != "" {
+				// Agent HTTP path: more retries before leaving the position naked.
+				slMaxAttempts = 5
+			}
+			slRetryDelay := 4 * time.Second
 			var slResult *HyperliquidStopLossUpdateResult
 			var slStderr string
 			var slErr error
