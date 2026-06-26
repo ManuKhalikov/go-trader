@@ -42,6 +42,35 @@ func TestEnsureHLMinNotionalQty_BumpsSubMinimum(t *testing.T) {
 	}
 }
 
+func TestEnsureHLMinNotionalQty_RoundsToZero(t *testing.T) {
+	orig := runHyperliquidRoundSizeFn
+	defer func() { runHyperliquidRoundSizeFn = orig }()
+
+	// BTC at $58366 with qty=0.000188 — rounds to zero for sz_decimals=3 (min_lot=0.001).
+	runHyperliquidRoundSizeFn = func(script, symbol string, size, markPrice float64) (*HyperliquidRoundSizeResult, string, error) {
+		return &HyperliquidRoundSizeResult{
+			Symbol:        symbol,
+			RequestedSize: size,
+			RoundedSize:   0, // rounds to zero
+			RoundsToZero:  true,
+			SzDecimals:    3,
+			MinLot:        0.001,
+			MinNotionalUSD: 58.37,
+		}, "", nil
+	}
+
+	qty, err := ensureHLMinNotionalQty("script", "BTC", 0.0001884, 58366.50)
+	if err != nil {
+		t.Fatalf("ensureHLMinNotionalQty rounds-to-zero should bump, not error: %v", err)
+	}
+	if qty*58366.50 < hlExchangeMinNotionalUSD {
+		t.Fatalf("bumped qty %g still below min notional (~$%.2f)", qty, qty*58366.50)
+	}
+	if qty < 0.001 {
+		t.Fatalf("bumped qty %g is below min_lot 0.001", qty)
+	}
+}
+
 func TestHLVirtualOnChainMismatched_FlatOnChain(t *testing.T) {
 	sc := StrategyConfig{ID: "s1", Args: []string{"x", "ETH"}}
 	ss := &StrategyState{

@@ -344,6 +344,11 @@ func (ss *StatusServer) handleEmergencyCloseHTTP(w http.ResponseWriter, r *http.
 		return
 	}
 	strategyID := resolveEmergencyCloseStrategyID(body.StrategyID)
+	// Drain any pending manual-open that completed just before this emergency-close
+	// request so runManualClose can find the position in state.
+	if err := ss.adoptPendingManualActionsSync(); err != nil {
+		fmt.Fprintf(os.Stderr, "[emergency-close] state adoption failed: %v — attempting close anyway\n", err)
+	}
 	args := buildEmergencyCloseArgv(strategyID, ss.configPathForManual(), body.Symbol)
 	code, stderr := runManualCloseCapture(args)
 	w.Header().Set("Content-Type", "application/json")

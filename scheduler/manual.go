@@ -381,14 +381,31 @@ func runManualOpen(args []string) int {
 			stopLossTriggerPx = resolvedFillPrice + effectiveATRMult*entryATR
 		}
 		if stopLossTriggerPx > 0 {
-			slResult, slStderr, slErr := RunHyperliquidUpdateStopLoss(script, sc.Symbol, *side, fillQty, stopLossTriggerPx, 0)
+			const slMaxAttempts = 3
+			const slRetryDelay = 4 * time.Second
+			var slResult *HyperliquidStopLossUpdateResult
+			var slStderr string
+			var slErr error
+			for attempt := 1; attempt <= slMaxAttempts; attempt++ {
+				slResult, slStderr, slErr = RunHyperliquidUpdateStopLoss(script, sc.Symbol, *side, fillQty, stopLossTriggerPx, 0)
+				if slErr == nil && (slResult == nil || (slResult.Error == "" && slResult.StopLossError == "")) {
+					break // placed successfully
+				}
+				if attempt < slMaxAttempts {
+					fmt.Fprintf(os.Stderr, "[manual-open] SL arm attempt %d/%d failed — retrying in %v\n", attempt, slMaxAttempts, slRetryDelay)
+					time.Sleep(slRetryDelay)
+				}
+			}
 			if slStderr != "" {
 				fmt.Fprintf(os.Stderr, "SL arm stderr: %s\n", slStderr)
 			}
 			if slErr != nil {
 				fmt.Fprintf(os.Stderr, "warning: SL placement failed: %v (position is open but unprotected)\n", slErr)
 			} else if slResult.Error != "" {
-				fmt.Fprintf(os.Stderr, "warning: SL arm error: %s\n", slResult.Error)
+				fmt.Fprintf(os.Stderr, "warning: SL arm error: %s (position is open but unprotected)\n", slResult.Error)
+			} else if slResult.StopLossError != "" {
+				// Non-fatal SDK error: stop_loss_error field (script exits 0 but SL was not placed)
+				fmt.Fprintf(os.Stderr, "warning: SL placement SDK error: %s (position is open but unprotected)\n", slResult.StopLossError)
 			} else {
 				stopLossOID = slResult.StopLossOID
 				stopLossTriggerPx = slResult.StopLossTriggerPx

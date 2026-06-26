@@ -111,12 +111,11 @@ func ensureHLMinNotionalQty(script, symbol string, qty, mark float64) (float64, 
 		return 0, fmt.Errorf("nil round-size result for %s", symbol)
 	}
 	rounded := result.RoundedSize
-	if rounded <= 0 {
-		return 0, validateHLLotSize(script, symbol, qty, mark)
-	}
-	if rounded*mark >= hlExchangeMinNotionalUSD {
+	if rounded > 0 && rounded*mark >= hlExchangeMinNotionalUSD {
 		return qty, nil
 	}
+	// rounded == 0 (qty below min lot) OR rounded*mark below exchange minimum —
+	// fall through to bump logic instead of erroring.
 	minQty := hlExchangeMinNotionalUSD / mark
 	bumped := ceilHLQtyToMinLot(minQty, result.SzDecimals)
 	if bumped <= rounded {
