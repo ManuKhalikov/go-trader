@@ -169,24 +169,40 @@ def _round_perps_px(px: float, sz_decimals: int) -> float:
     if px <= 0:
         return px
     px_decimals = max(0, 6 - sz_decimals)
-    log = math.floor(math.log10(abs(px)))
-    sig_decimals = max(0, 5 - 1 - int(log))
+    sig_decimals = _price_sig_decimals(px)
     decimals = min(px_decimals, sig_decimals)
     rounded = round(px, decimals)
     return _nudge_off_round_cluster(rounded, sz_decimals)
 
 
+def _price_sig_decimals(px: float) -> int:
+    """Decimal places allowed by HL's 5-significant-figure cap."""
+    if px <= 0:
+        return 0
+    log = math.floor(math.log10(abs(px)))
+    return max(0, 5 - 1 - int(log))
+
+
 def _nudge_off_round_cluster(px: float, sz_decimals: int) -> float:
-    """Defense-in-depth: nudge prices off obvious round clusters after HL rounding."""
+    """Defense-in-depth: nudge prices off obvious round clusters after HL rounding.
+
+    When the 5-sig-fig cap forces whole-dollar prices (BTC ~60k), adding a
+    fractional tick (+0.1) produces 6 sig figs and HL rejects the order as
+    Invalid TP/SL price — skip nudge in that case.
+    """
     if px <= 0:
         return px
     px_decimals = max(0, 6 - sz_decimals)
-    tick = 10 ** (-max(0, min(px_decimals, 4)))
+    sig_decimals = _price_sig_decimals(px)
+    decimals = min(px_decimals, sig_decimals)
+    if decimals <= 0:
+        return px
+    tick = 10 ** (-decimals)
     cents = round((px % 1) * 100)
     on_cluster = cents in (0, 50) or (px >= 100 and abs(px % 10) < tick * 2)
     if not on_cluster:
         return px
-    return round(px + tick, px_decimals)
+    return round(px + tick, decimals)
 
 
 def _floor_size(sz: float, sz_decimals: int) -> float:
@@ -1347,15 +1363,15 @@ class HyperliquidExchangeAdapter:
         sz: float,
         trigger_px: float,
         is_buy: bool,
-        limit_slippage_pct: float = 5.0,
+        limit_slippage_pct: float = 10.0,
     ) -> dict:
         """Place a reduce-only stop-loss trigger order (#412).
 
         ``is_buy`` is the direction of the triggered order itself — a long
         position's stop-loss is a SELL (is_buy=False); a short's is a BUY
         (is_buy=True). HL requires a ``limit_px`` as the worst acceptable
-        fill price; a market-trigger uses a wide band off the trigger
-        (default 5%) so slippage around the stop doesn't reject the fill.
+        fill price; market TP/SL on HL allows up to 10% slippage off the
+        trigger (not related to account risk-per-trade sizing).
 
         HL's open-order limit is 1000 per account (scales to 5000 with volume).
         When ≥1000 orders are open, new trigger / reduce-only orders are rejected.
@@ -1374,18 +1390,19 @@ class HyperliquidExchangeAdapter:
         if trigger_px <= 0:
             raise ValueError(f"trigger_px must be > 0, got {trigger_px}")
 
+        # Round trigger first, then derive limit from the wire-ready trigger so
+        # limit/trigger stay directionally valid after independent rounding.
+        trigger_px = _round_perps_px(trigger_px, sz_decimals)
         slip = max(limit_slippage_pct, 0.0) / 100.0
         if is_buy:
             limit_px = trigger_px * (1.0 + slip)
         else:
             limit_px = trigger_px * (1.0 - slip)
-        # HL perps: prices use at most (MAX_DECIMALS - sz_decimals) decimals
-        # AND at most 5 significant figures. Fixed-6-decimal rounding here
-        # was rejected by HL on high-priced assets like BTC (sz_decimals=5,
-        # so px_decimals=1) — the trigger sat resting only because the order
-        # got rejected (#421 review point 5).
         limit_px = _round_perps_px(limit_px, sz_decimals)
-        trigger_px = _round_perps_px(trigger_px, sz_decimals)
+        if is_buy and limit_px < trigger_px:
+            limit_px = trigger_px
+        elif not is_buy and limit_px > trigger_px:
+            limit_px = trigger_px
 
         order_type = {"trigger": {"triggerPx": trigger_px, "isMarket": True, "tpsl": "sl"}}
         return self._exchange.order(

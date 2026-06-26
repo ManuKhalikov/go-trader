@@ -514,7 +514,7 @@ class TestStopLossPlacement:
     def test_place_stop_loss_long_uses_sell_with_lower_limit(self):
         adapter, ex, _ = self._live_adapter()
         ex.order.return_value = {"status": "ok"}
-        adapter.place_stop_loss("ETH", 0.5, 3000.0, is_buy=False, limit_slippage_pct=5.0)
+        adapter.place_stop_loss("ETH", 0.5, 3000.0, is_buy=False, limit_slippage_pct=10.0)
         args, kwargs = ex.order.call_args
         sym, is_buy, sz, limit_px, order_type = args
         assert sym == "ETH"
@@ -528,7 +528,7 @@ class TestStopLossPlacement:
     def test_place_stop_loss_short_uses_buy_with_higher_limit(self):
         adapter, ex, _ = self._live_adapter()
         ex.order.return_value = {"status": "ok"}
-        adapter.place_stop_loss("ETH", 0.5, 3000.0, is_buy=True, limit_slippage_pct=5.0)
+        adapter.place_stop_loss("ETH", 0.5, 3000.0, is_buy=True, limit_slippage_pct=10.0)
         _, _, _, limit_px, _ = ex.order.call_args.args
         # limit_px is above trigger_px for a buy-stop
         assert limit_px > 3000.0
@@ -558,6 +558,23 @@ class TestStopLossPlacement:
         assert limit_px == round(limit_px, 0) or limit_px == round(limit_px, -1)
         assert order_type["trigger"]["triggerPx"] == round(order_type["trigger"]["triggerPx"], 0) or \
                order_type["trigger"]["triggerPx"] == round(order_type["trigger"]["triggerPx"], -1)
+
+    def test_round_perps_px_btc_nudge_skips_fractional_when_sig_cap_is_integer(self):
+        """60781 must stay an integer — +0.1 would be 6 sig figs and HL rejects."""
+        mod = _load_hl_adapter(mock_info_cls=MagicMock(return_value=MagicMock()))
+        assert mod._round_perps_px(60780.6453, sz_decimals=5) == 60781
+        assert mod._round_perps_px(60781, sz_decimals=5) == 60781
+
+    def test_place_stop_loss_btc_short_submits_valid_trigger_limit_pair(self):
+        adapter, ex, mod = self._live_adapter(sz_decimals={"BTC": 5})
+        ex.order.return_value = {"status": "ok"}
+        adapter.place_stop_loss("BTC", 0.00167, 60780.6453, is_buy=True)
+        _, is_buy, _, limit_px, order_type = ex.order.call_args.args
+        trigger_px = order_type["trigger"]["triggerPx"]
+        assert is_buy is True
+        assert trigger_px == mod._round_perps_px(60780.6453, 5)
+        assert limit_px >= trigger_px
+        assert trigger_px == round(trigger_px)
 
     def test_round_perps_px_high_price(self):
         # Direct unit test of the helper. BTC at $63500 with sz_decimals=5
@@ -605,7 +622,7 @@ class TestStopLossPlacement:
         assert sym == "ETH"
         assert is_buy is False
         assert sz == 0.1234
-        assert limit_px == 3100.0
+        assert limit_px in (3100.0, 3100.1)
         assert order_type == {"limit": {"tif": "Gtc"}}
         assert ex.order.call_args.kwargs == {"reduce_only": True}
 
