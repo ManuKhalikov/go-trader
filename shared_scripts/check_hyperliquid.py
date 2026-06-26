@@ -486,6 +486,38 @@ def compute_tp_tier_sizes(size, tiers, floor_size_fn):
     return sizes
 
 
+HL_TP_MIN_ORDER_USD = 10.0
+
+
+def _min_tp_tier_notional_usd(mark, tier_sizes):
+    """Smallest per-tier USD notional among positive tier sizes."""
+    positives = [ts * mark for ts in tier_sizes if ts > 0]
+    return min(positives) if positives else 0.0
+
+
+def _collapse_tp_tiers_for_min_notional(tiers, size, floor_size_fn, mark, min_order_usd=HL_TP_MIN_ORDER_USD):
+    """Collapse TP tiers (3→2→1) when any leg would be below HL's $10 minimum."""
+    if not tiers or size <= 0 or mark <= 0:
+        return tiers, ""
+
+    tier_sizes = compute_tp_tier_sizes(size, tiers, floor_size_fn)
+    min_leg = _min_tp_tier_notional_usd(mark, tier_sizes)
+    if min_leg >= min_order_usd:
+        return tiers, ""
+
+    if len(tiers) >= 2:
+        two_tier = [(tiers[0][0], 0.5), (tiers[-1][0], 1.0)]
+        two_sizes = compute_tp_tier_sizes(size, two_tier, floor_size_fn)
+        if _min_tp_tier_notional_usd(mark, two_sizes) >= min_order_usd:
+            return (
+                two_tier,
+                f"collapsed {len(tiers)}→2 tiers (min leg ${min_leg:.2f} < ${min_order_usd})",
+            )
+
+    one_tier = [(tiers[-1][0], 1.0)]
+    return one_tier, f"collapsed to 1 tier (min leg ${min_leg:.2f} < ${min_order_usd})"
+
+
 def run_sync_protection(
     symbol,
     side,
@@ -699,6 +731,19 @@ def run_sync_protection(
 
         tiers = _normalize_tp_tiers(tp_tiers, tp1_atr_mult, tp1_fraction, tp2_atr_mult)
         if tiers:
+            size_for_tiers = adapter.round_size(symbol, size)
+            if size_for_tiers > 0:
+                tiers, collapse_note = _collapse_tp_tiers_for_min_notional(
+                    tiers,
+                    size_for_tiers,
+                    lambda sz: adapter.floor_size(symbol, sz),
+                    avg_cost,
+                )
+                if collapse_note:
+                    print(
+                        f"[INFO] TP tier {collapse_note} for {symbol}",
+                        file=sys.stderr,
+                    )
             existing_tp_oids = list(tp_oids or [])
             if not existing_tp_oids and (tp1_oid > 0 or tp2_oid > 0):
                 existing_tp_oids = [tp1_oid, tp2_oid]

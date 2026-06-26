@@ -1411,6 +1411,33 @@ class TestComputeTPTierSizes:
         assert sizes[1] == pytest.approx(0.25)
 
 
+class TestCollapseTpTiersForMinNotional(TestComputeTPTierSizes):
+    def test_collapses_three_tiers_when_legs_below_ten_dollars(self):
+        mod = self._load()
+        tiers = [(1.5, 0.4), (3.5, 0.75), (5.0, 1.0)]
+        collapsed, note = mod._collapse_tp_tiers_for_min_notional(
+            tiers,
+            0.08,
+            self._floor3,
+            152.0,
+        )
+        assert len(collapsed) == 1
+        assert collapsed[0][1] == 1.0
+        assert "collapsed" in note
+
+    def test_keeps_three_tiers_when_legs_clear_minimum(self):
+        mod = self._load()
+        tiers = [(1.5, 0.4), (3.5, 0.75), (5.0, 1.0)]
+        kept, note = mod._collapse_tp_tiers_for_min_notional(
+            tiers,
+            0.43,
+            self._floor3,
+            152.0,
+        )
+        assert len(kept) == 3
+        assert note == ""
+
+
 class TestRunRoundSize:
     def test_round_size_emits_json_and_exits_on_zero(self):
         mod, spec = _load_check_module()
