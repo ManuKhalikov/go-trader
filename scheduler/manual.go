@@ -940,11 +940,12 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 
 	switch a.Action {
 	case "open":
-		if _, exists := ss.Positions[a.Symbol]; exists {
-			return fmt.Errorf("position already open for %s/%s; close it first", a.StrategyID, a.Symbol)
+		symKey := canonicalStrategyPositionKey(a.Symbol)
+		if hasStrategyPositionOpen(ss, symKey) {
+			return fmt.Errorf("position already open for %s/%s; close it first", a.StrategyID, symKey)
 		}
 		pos := &Position{
-			Symbol:            a.Symbol,
+			Symbol:            symKey,
 			Quantity:          a.Quantity,
 			InitialQuantity:   a.Quantity,
 			AvgCost:           a.FillPrice,
@@ -958,19 +959,19 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 			StopLossTriggerPx: a.StopLossTriggerPx,
 			TPOIDs:            a.TPOIDs,
 		}
-		pos.TradePositionID = newTradePositionID(a.StrategyID, a.Symbol, now)
-		ss.Positions[a.Symbol] = pos
+		pos.TradePositionID = newTradePositionID(a.StrategyID, symKey, now)
+		setStrategyPosition(ss, symKey, pos)
 
 		trade := Trade{
 			Timestamp:         now,
 			StrategyID:        a.StrategyID,
-			Symbol:            a.Symbol,
+			Symbol:            symKey,
 			Side:              openTradeSide(a.Side),
 			Quantity:          a.Quantity,
 			Price:             a.FillPrice,
 			Value:             a.Quantity * a.FillPrice,
 			TradeType:         "perps",
-			Details:           fmt.Sprintf("manual open %s %s @ $%.4f", a.Side, a.Symbol, a.FillPrice),
+			Details:           fmt.Sprintf("manual open %s %s @ $%.4f", a.Side, symKey, a.FillPrice),
 			PositionID:        pos.TradePositionID,
 			ExchangeOrderID:   a.ExchangeOrderID,
 			ExchangeFee:       a.FillFee,
@@ -986,15 +987,16 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 		// Fix #1: perps open deducts only the fee; notional stays virtual.
 		ss.Cash -= a.FillFee
 		fmt.Printf("[manual] applied open: %s %s %.6f %s @ $%.4f\n",
-			a.StrategyID, a.Side, a.Quantity, a.Symbol, a.FillPrice)
+			a.StrategyID, a.Side, a.Quantity, symKey, a.FillPrice)
 
 	case "close":
-		pos, exists := ss.Positions[a.Symbol]
-		if !exists || pos == nil {
-			return fmt.Errorf("no open position for %s/%s", a.StrategyID, a.Symbol)
+		symKey := canonicalStrategyPositionKey(a.Symbol)
+		pos, _ := lookupStrategyPosition(ss, symKey)
+		if pos == nil {
+			return fmt.Errorf("no open position for %s/%s", a.StrategyID, symKey)
 		}
 		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
-			return fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
+			return fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, symKey, pos.OwnerStrategyID, a.StrategyID)
 		}
 		// Use the explicit IsFullClose intent flag rather than a tolerance
 		// heuristic, so a deliberate 99% partial close isn't silently
@@ -1005,14 +1007,14 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 		trade := Trade{
 			Timestamp:       now,
 			StrategyID:      a.StrategyID,
-			Symbol:          a.Symbol,
+			Symbol:          symKey,
 			Side:            side,
 			Quantity:        a.Quantity,
 			Price:           a.FillPrice,
 			Value:           a.Quantity * a.FillPrice,
 			TradeType:       "perps",
-			Details:         fmt.Sprintf("manual close %s @ $%.4f | PnL=$%.2f", a.Symbol, a.FillPrice, a.RealizedPnL),
-			PositionID:      ensurePositionTradeID(a.StrategyID, a.Symbol, pos),
+			Details:         fmt.Sprintf("manual close %s @ $%.4f | PnL=$%.2f", symKey, a.FillPrice, a.RealizedPnL),
+			PositionID:      ensurePositionTradeID(a.StrategyID, symKey, pos),
 			ExchangeOrderID: a.ExchangeOrderID,
 			ExchangeFee:     a.FillFee,
 			FeeSource:       FeeSourceUserFills,
@@ -1027,24 +1029,21 @@ func applyManualAction(state *AppState, scByID map[string]StrategyConfig, a Pend
 
 		if closedFull {
 			recordClosedPosition(ss, pos, a.FillPrice, a.RealizedPnL, "manual_close", now)
-			delete(ss.Positions, a.Symbol)
+			deleteStrategyPosition(ss, symKey)
 		} else {
 			pos.Quantity -= a.Quantity
 		}
 		fmt.Printf("[manual] applied close: %s %.6f %s @ $%.4f | PnL=$%.2f\n",
-			a.StrategyID, a.Quantity, a.Symbol, a.FillPrice, a.RealizedPnL)
+			a.StrategyID, a.Quantity, symKey, a.FillPrice, a.RealizedPnL)
 
 	case "add":
-		// #873 manual scale-in: blend an add leg into the open position. Side is
-		// inferred from the position at CLI time; freezes EntryATR/regime/TP
-		// geometry (applyScaleIn) and grows InitialQuantity. The next manual
-		// protection sync re-sizes the on-chain SL/TP via ScaleInResizePending.
-		pos, exists := ss.Positions[a.Symbol]
-		if !exists || pos == nil {
-			return fmt.Errorf("no open position for %s/%s; open one first", a.StrategyID, a.Symbol)
+		symKey := canonicalStrategyPositionKey(a.Symbol)
+		pos, _ := lookupStrategyPosition(ss, symKey)
+		if pos == nil {
+			return fmt.Errorf("no open position for %s/%s; open one first", a.StrategyID, symKey)
 		}
 		if !manualPositionOwnedByStrategy(pos, a.StrategyID) {
-			return fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, a.Symbol, pos.OwnerStrategyID, a.StrategyID)
+			return fmt.Errorf("position %s/%s is owned by %q, not %q", a.StrategyID, symKey, pos.OwnerStrategyID, a.StrategyID)
 		}
 		if a.Side != "" && a.Side != pos.Side {
 			return fmt.Errorf("scale-in side %q does not match open position side %q for %s/%s", a.Side, pos.Side, a.StrategyID, a.Symbol)

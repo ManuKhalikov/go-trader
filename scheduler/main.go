@@ -266,6 +266,22 @@ func main() {
 	server.SetConfigContext(*configPath, cfg.Regime)
 	server.Start(statusPort)
 
+	// Rehydrate virtual positions from on-chain HL after deploy/restart so the
+	// agent watcher and /status see open manual-strategy positions immediately.
+	if os.Getenv("HYPERLIQUID_ACCOUNT_ADDRESS") != "" {
+		adoptResp := server.runAdoptHLPositions(false)
+		if adoptResp.Error != "" {
+			fmt.Printf("[BOOT] adopt-hl-positions failed: %s\n", adoptResp.Error)
+		} else {
+			for _, r := range adoptResp.Results {
+				switch r.Action {
+				case "adopted", "sl_oid_patched":
+					fmt.Printf("[BOOT] adopt-hl: %s %s %s — %s\n", r.StrategyID, r.Symbol, r.Action, r.Note)
+				}
+			}
+		}
+	}
+
 	// Graceful shutdown — two-phase drain (see scheduler/shutdown.go).
 	//
 	// Phase 1 (signal goroutine below): set draining flag, cancel

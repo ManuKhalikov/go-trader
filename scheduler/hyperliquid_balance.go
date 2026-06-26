@@ -345,20 +345,19 @@ func syncHyperliquidLiveCapital(sc *StrategyConfig) {
 	syncHyperliquidLiveCapitals([]StrategyConfig{*sc}, nil)
 }
 
-// fetchHyperliquidAccountEquity fetches trading equity and open perps positions.
-func fetchHyperliquidAccountEquity(accountAddress string) (float64, []HLPosition, error) {
-	data, err := hlInfoPost(map[string]string{
-		"type": "clearinghouseState",
-		"user": accountAddress,
-	})
-	if err != nil {
-		return 0, nil, err
-	}
+type hlClearinghouseSnapshot struct {
+	AccountValue     float64
+	MarginUsed       float64
+	TotalUnrealized  float64
+	Positions        []HLPosition
+}
 
+func parseHyperliquidClearinghouseSnapshot(data []byte) (hlClearinghouseSnapshot, error) {
 	var result struct {
 		MarginSummary struct {
-			AccountValue     string `json:"accountValue"`
-			TotalMarginUsed  string `json:"totalMarginUsed"`
+			AccountValue        string `json:"accountValue"`
+			TotalMarginUsed     string `json:"totalMarginUsed"`
+			TotalUnrealizedPnl  string `json:"totalUnrealizedPnl"`
 		} `json:"marginSummary"`
 		AssetPositions []struct {
 			Position struct {
@@ -374,20 +373,15 @@ func fetchHyperliquidAccountEquity(accountAddress string) (float64, []HLPosition
 		} `json:"assetPositions"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
-		return 0, nil, fmt.Errorf("parse response: %w", err)
+		return hlClearinghouseSnapshot{}, fmt.Errorf("parse response: %w", err)
 	}
 
 	perpsValue, err := strconv.ParseFloat(result.MarginSummary.AccountValue, 64)
 	if err != nil {
-		return 0, nil, fmt.Errorf("parse accountValue %q: %w", result.MarginSummary.AccountValue, err)
+		return hlClearinghouseSnapshot{}, fmt.Errorf("parse accountValue %q: %w", result.MarginSummary.AccountValue, err)
 	}
 	marginUsed, _ := strconv.ParseFloat(result.MarginSummary.TotalMarginUsed, 64)
-
-	spot, spotErr := fetchHyperliquidSpotUSDC(accountAddress)
-	if spotErr != nil {
-		fmt.Printf("[WARN] hyperliquid spot balance fetch failed: %v — using perps accountValue only\n", spotErr)
-	}
-	balance := computeHyperliquidEquity(perpsValue, marginUsed, spot)
+	totalUnrealized, _ := strconv.ParseFloat(result.MarginSummary.TotalUnrealizedPnl, 64)
 
 	var positions []HLPosition
 	for _, ap := range result.AssetPositions {
@@ -399,27 +393,17 @@ func fetchHyperliquidAccountEquity(accountAddress string) (float64, []HLPosition
 		if err != nil {
 			fmt.Printf("[WARN] hl-sync: failed to parse entryPx %q for %s: %v\n", ap.Position.EntryPx, ap.Position.Coin, err)
 		}
-		// #254: HL per-position leverage from clearinghouseState. Value is a
-		// number in the API but tolerated as string; default 1 on parse error.
 		lev := 1.0
 		if lvStr := ap.Position.Leverage.Value.String(); lvStr != "" {
 			if parsed, lerr := strconv.ParseFloat(lvStr, 64); lerr == nil && parsed > 0 {
 				lev = parsed
 			}
 		}
-		// #768: also capture the margin-mode label so Python can skip its
-		// duplicate get_position_leverage /info call on --execute. HL returns
-		// "isolated" or "cross"; any other value is ignored (Python falls
-		// through to today's fetch path).
 		mode := ""
 		switch ap.Position.Leverage.Type {
 		case "isolated", "cross":
 			mode = ap.Position.Leverage.Type
 		}
-		// #918: exchange-reported unrealized P&L. Tolerated as absent/empty
-		// (older snapshots or parse failure) → 0, which the reconciler treats
-		// as "no P&L contribution" and the drift alarm will surface if it
-		// causes the member sum to miss the account balance.
 		var uPnL float64
 		if ap.Position.UnrealizedPnl != "" {
 			if parsed, perr := strconv.ParseFloat(ap.Position.UnrealizedPnl, 64); perr == nil {
@@ -435,6 +419,73 @@ func fetchHyperliquidAccountEquity(accountAddress string) (float64, []HLPosition
 			UnrealizedPnL: uPnL,
 		})
 	}
+
+	return hlClearinghouseSnapshot{
+		AccountValue:    perpsValue,
+		MarginUsed:      marginUsed,
+		TotalUnrealized: totalUnrealized,
+		Positions:       positions,
+	}, nil
+}
+
+// mergeHLPositionsByCoin merges dex snapshots; later entries override same bare coin.
+func mergeHLPositionsByCoin(chunks ...[]HLPosition) []HLPosition {
+	byCoin := make(map[string]HLPosition)
+	order := make([]string, 0)
+	for _, chunk := range chunks {
+		for _, p := range chunk {
+			coin := normalizeHlCoin(p.Coin)
+			if coin == "" {
+				continue
+			}
+			p.Coin = coin
+			if _, seen := byCoin[coin]; !seen {
+				order = append(order, coin)
+			}
+			byCoin[coin] = p
+		}
+	}
+	out := make([]HLPosition, 0, len(order))
+	for _, coin := range order {
+		out = append(out, byCoin[coin])
+	}
+	return out
+}
+
+// fetchHyperliquidAccountEquity fetches trading equity and open perps positions.
+// HIP-3 builder perps (GOLD, SP500, etc.) live on the xyz dex and are merged
+// with main-dex clearinghouseState so hl-sync and /status reconcile correctly.
+func fetchHyperliquidAccountEquity(accountAddress string) (float64, []HLPosition, error) {
+	mainData, err := hlInfoPost(map[string]string{
+		"type": "clearinghouseState",
+		"user": accountAddress,
+	})
+	if err != nil {
+		return 0, nil, err
+	}
+	mainSnap, err := parseHyperliquidClearinghouseSnapshot(mainData)
+	if err != nil {
+		return 0, nil, err
+	}
+
+	positions := mainSnap.Positions
+	if xyzData, xyzErr := hlInfoPost(map[string]string{
+		"type": "clearinghouseState",
+		"user": accountAddress,
+		"dex":  "xyz",
+	}); xyzErr != nil {
+		fmt.Printf("[WARN] hyperliquid xyz clearinghouseState fetch failed: %v — using main dex positions only\n", xyzErr)
+	} else if xyzSnap, parseErr := parseHyperliquidClearinghouseSnapshot(xyzData); parseErr != nil {
+		fmt.Printf("[WARN] hyperliquid xyz clearinghouseState parse failed: %v\n", parseErr)
+	} else {
+		positions = mergeHLPositionsByCoin(mainSnap.Positions, xyzSnap.Positions)
+	}
+
+	spot, spotErr := fetchHyperliquidSpotUSDC(accountAddress)
+	if spotErr != nil {
+		fmt.Printf("[WARN] hyperliquid spot balance fetch failed: %v — using perps accountValue only\n", spotErr)
+	}
+	balance := computeHyperliquidEquity(mainSnap.AccountValue, mainSnap.MarginUsed, spot)
 
 	return balance, positions, nil
 }
@@ -729,13 +780,18 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 	// Find the on-chain position for this strategy's symbol.
 	var onChainPos *HLPosition
 	for i := range positions {
-		if positions[i].Coin == sym {
+		if hlCoinsMatch(sym, positions[i].Coin) {
 			onChainPos = &positions[i]
 			break
 		}
 	}
 
-	statePos := stratState.Positions[sym]
+	statePos, statePosKey := lookupStrategyPosition(stratState, sym)
+	if statePos != nil && statePosKey != canonicalStrategyPositionKey(sym) {
+		// Migrate legacy qualified key (xyz:GOLD) to bare coin for reconcile.
+		setStrategyPosition(stratState, sym, statePos)
+		statePosKey = canonicalStrategyPositionKey(sym)
+	}
 
 	if onChainPos != nil && statePos != nil {
 		// Both exist — reconcile quantity/side if they differ.
@@ -862,7 +918,7 @@ func reconcileHyperliquidPositionsWithResolver(stratState *StrategyState, sym st
 		}
 		if !recordPerpsExternalCloseWithFillFee(stratState, sym, closePx, lookupExt.Fee, useFillFeeExt, oidStr, "hl_sync_external", logger) {
 			recordClosedPosition(stratState, statePos, 0, 0, "hl_sync_external", time.Now().UTC())
-			delete(stratState.Positions, sym)
+			deleteStrategyPosition(stratState, statePosKey)
 			clearATRMultMissingEntryATRWarningOnHLPerpsClose(stratState, sym)
 		}
 		changed = true

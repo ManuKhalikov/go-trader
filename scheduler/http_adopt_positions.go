@@ -103,6 +103,24 @@ func (ss *StatusServer) handleAdoptHLPositionsHTTP(w http.ResponseWriter, r *htt
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
 
+	resp := ss.runAdoptHLPositions(req.DryRun)
+	if resp.Error != "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(resp)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// runAdoptHLPositions reconciles on-chain HL positions into virtual state for
+// type=manual strategies. Called from the HTTP endpoint and at daemon boot.
+func (ss *StatusServer) runAdoptHLPositions(dryRun bool) adoptHLPositionsResponse {
+	if ss == nil {
+		return adoptHLPositionsResponse{Error: "status server not initialized"}
+	}
+
 	// Snapshot strategy configs (no state lock needed — strategiesMu is separate).
 	ss.strategiesMu.RLock()
 	strategies := append([]StrategyConfig(nil), ss.strategies...)
@@ -130,10 +148,7 @@ func (ss *StatusServer) handleAdoptHLPositionsHTTP(w http.ResponseWriter, r *htt
 		fmt.Fprintf(os.Stderr, "[adopt-hl-positions] fetch stderr: %s\n", string(stderr))
 	}
 	if runErr != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(adoptHLPositionsResponse{Error: fmt.Sprintf("fetch_hl_open_positions.py: %v", runErr)})
-		return
+		return adoptHLPositionsResponse{Error: fmt.Sprintf("fetch_hl_open_positions.py: %v", runErr)}
 	}
 	var wallet hlFetchedWallet
 	if err := json.Unmarshal(stdout, &wallet); err != nil || wallet.Error != "" {
@@ -141,10 +156,7 @@ func (ss *StatusServer) handleAdoptHLPositionsHTTP(w http.ResponseWriter, r *htt
 		if wallet.Error != "" {
 			errMsg = wallet.Error
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(adoptHLPositionsResponse{Error: errMsg})
-		return
+		return adoptHLPositionsResponse{Error: errMsg}
 	}
 
 	var results []adoptHLPositionResult
@@ -179,7 +191,7 @@ func (ss *StatusServer) handleAdoptHLPositionsHTTP(w http.ResponseWriter, r *htt
 		var snap stateSnap
 		ss.mu.RLock()
 		if st := ss.state.Strategies[entry.sc.ID]; st != nil {
-			if pos := st.Positions[entry.coin]; pos != nil && pos.Quantity > 0 {
+			if pos, _ := lookupStrategyPosition(st, entry.coin); pos != nil && pos.Quantity > 0 {
 				snap.hasPos = true
 				snap.slOID = pos.StopLossOID
 				snap.slTrigger = pos.StopLossTriggerPx
@@ -212,12 +224,12 @@ func (ss *StatusServer) handleAdoptHLPositionsHTTP(w http.ResponseWriter, r *htt
 				continue
 			}
 			note := fmt.Sprintf("patched OID %d @ $%.4f", slOrder.OID, slOrder.TriggerPx)
-			if req.DryRun {
+			if dryRun {
 				note = "dry_run: would " + note
 			} else {
 				ss.mu.Lock()
 				if st := ss.state.Strategies[entry.sc.ID]; st != nil {
-					if pos := st.Positions[entry.coin]; pos != nil && pos.Quantity > 0 {
+					if pos, _ := lookupStrategyPosition(st, entry.coin); pos != nil && pos.Quantity > 0 {
 						pos.StopLossOID = slOrder.OID
 						pos.StopLossTriggerPx = slOrder.TriggerPx
 					}
@@ -247,13 +259,13 @@ func (ss *StatusServer) handleAdoptHLPositionsHTTP(w http.ResponseWriter, r *htt
 		if slOID > 0 {
 			note += fmt.Sprintf(" | SL OID %d @ $%.4f", slOID, slTrigger)
 		}
-		if req.DryRun {
+		if dryRun {
 			note = "dry_run: would adopt — " + note
 		} else {
 			err := ss.stateDB.InsertPendingManualAction(PendingManualAction{
 				StrategyID:        entry.sc.ID,
 				Action:            "open",
-				Symbol:            entry.coin,
+				Symbol:            canonicalStrategyPositionKey(entry.coin),
 				Side:              side,
 				Quantity:          qty,
 				FillPrice:         hlPos.EntryPrice,
@@ -291,6 +303,5 @@ func (ss *StatusServer) handleAdoptHLPositionsHTTP(w http.ResponseWriter, r *htt
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(adoptHLPositionsResponse{Results: results})
+	return adoptHLPositionsResponse{Results: results}
 }

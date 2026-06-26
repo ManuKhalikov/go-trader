@@ -50,3 +50,58 @@ func toHyperliquidCoin(coin string) string {
 func hlCoinsMatch(configured, onChain string) bool {
 	return normalizeHlCoin(configured) == normalizeHlCoin(onChain)
 }
+
+// canonicalStrategyPositionKey is the bare coin used as the Positions map key.
+func canonicalStrategyPositionKey(sym string) string {
+	return normalizeHlCoin(sym)
+}
+
+// lookupStrategyPosition finds a virtual position by bare coin, including legacy
+// qualified keys (e.g. xyz:GOLD stored before canonicalization).
+func lookupStrategyPosition(ss *StrategyState, sym string) (*Position, string) {
+	if ss == nil || ss.Positions == nil {
+		return nil, ""
+	}
+	bare := canonicalStrategyPositionKey(sym)
+	if bare == "" {
+		return nil, ""
+	}
+	if pos := ss.Positions[bare]; pos != nil {
+		return pos, bare
+	}
+	for key, pos := range ss.Positions {
+		if pos != nil && hlCoinsMatch(bare, key) {
+			return pos, key
+		}
+	}
+	return nil, ""
+}
+
+// setStrategyPosition stores pos under the bare coin and removes stale aliases.
+func setStrategyPosition(ss *StrategyState, sym string, pos *Position) {
+	if ss == nil || pos == nil {
+		return
+	}
+	key := canonicalStrategyPositionKey(sym)
+	pos.Symbol = key
+	for existingKey := range ss.Positions {
+		if hlCoinsMatch(existingKey, key) && existingKey != key {
+			delete(ss.Positions, existingKey)
+		}
+	}
+	ss.Positions[key] = pos
+}
+
+func deleteStrategyPosition(ss *StrategyState, sym string) {
+	if ss == nil {
+		return
+	}
+	if _, key := lookupStrategyPosition(ss, sym); key != "" {
+		delete(ss.Positions, key)
+	}
+}
+
+func hasStrategyPositionOpen(ss *StrategyState, sym string) bool {
+	pos, _ := lookupStrategyPosition(ss, sym)
+	return pos != nil && pos.Quantity > 0
+}

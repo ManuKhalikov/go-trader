@@ -697,7 +697,76 @@ func TestFetchHyperliquidStateParsesLeverage(t *testing.T) {
 	}
 }
 
-// --- #258: shared-coin reconciliation tests ---
+// HIP-3 builder perps (GOLD, etc.) are returned from xyz dex clearinghouseState.
+func TestFetchHyperliquidStateMergesXyzDexPositions(t *testing.T) {
+	mainBody := `{
+		"marginSummary": {"accountValue": "1000.0"},
+		"assetPositions": []
+	}`
+	xyzBody := `{
+		"marginSummary": {"accountValue": "50.0"},
+		"assetPositions": [
+			{"position": {"coin": "xyz:GOLD", "szi": "-0.0122", "entryPx": "4089.2", "leverage": {"type": "isolated", "value": 20}}}
+		]
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		if req["dex"] == "xyz" {
+			_, _ = w.Write([]byte(xyzBody))
+			return
+		}
+		if req["type"] == "spotClearinghouseState" {
+			_, _ = w.Write([]byte(`{"balances":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(mainBody))
+	}))
+	defer srv.Close()
+
+	savedURL := hlMainnetURL
+	hlMainnetURL = srv.URL
+	defer func() { hlMainnetURL = savedURL }()
+
+	_, positions, err := fetchHyperliquidState("0xdeadbeef")
+	if err != nil {
+		t.Fatalf("fetchHyperliquidState: %v", err)
+	}
+	if len(positions) != 1 {
+		t.Fatalf("positions = %d, want 1 (xyz GOLD)", len(positions))
+	}
+	if positions[0].Coin != "GOLD" {
+		t.Errorf("Coin = %q, want GOLD", positions[0].Coin)
+	}
+	if positions[0].Size > 0 {
+		t.Errorf("Size = %v, want negative short", positions[0].Size)
+	}
+}
+
+// Test lookupStrategyPosition finds legacy xyz:GOLD key.
+func TestLookupStrategyPositionLegacyQualifiedKey(t *testing.T) {
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"xyz:GOLD": {Symbol: "xyz:GOLD", Quantity: 0.012, Side: "short"},
+		},
+	}
+	pos, key := lookupStrategyPosition(ss, "GOLD")
+	if pos == nil {
+		t.Fatal("expected position for GOLD lookup")
+	}
+	if key != "xyz:GOLD" {
+		t.Errorf("key = %q, want xyz:GOLD", key)
+	}
+	setStrategyPosition(ss, "GOLD", pos)
+	if _, ok := ss.Positions["GOLD"]; !ok {
+		t.Error("expected migration to bare GOLD key")
+	}
+	if _, ok := ss.Positions["xyz:GOLD"]; ok {
+		t.Error("expected xyz:GOLD alias removed after canonicalization")
+	}
+}
+
 
 // TestAccountSyncSharedCoinSkipsReconciliation verifies that when two strategies
 // trade the same coin on a shared wallet, per-strategy reconciliation is skipped

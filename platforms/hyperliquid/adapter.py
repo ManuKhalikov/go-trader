@@ -989,28 +989,46 @@ class HyperliquidExchangeAdapter:
     # Account data (requires HYPERLIQUID_ACCOUNT_ADDRESS)
     # ─────────────────────────────────────────────
 
+    def _positions_from_user_state(self, user_state: dict) -> list:
+        positions = []
+        for asset_pos in user_state.get("assetPositions", []):
+            pos = asset_pos.get("position", {})
+            szi = float(pos.get("szi", 0))
+            if szi == 0:
+                continue
+            positions.append({
+                "coin": pos.get("coin", ""),
+                "size": szi,
+                "entry_price": float(pos.get("entryPx", 0) or 0),
+                "unrealized_pnl": float(pos.get("unrealizedPnl", 0) or 0),
+            })
+        return positions
+
     def get_open_positions(self) -> list:
         """
         Get open perp positions for the configured account.
         Returns list of dicts: {coin, size, entry_price, unrealized_pnl}.
+        Merges main-dex and xyz HIP-3 dex user_state snapshots.
         """
         if not self._account_address:
             return []
         try:
-            user_state = self._info.user_state(self._account_address)
-            positions = []
-            for asset_pos in user_state.get("assetPositions", []):
-                pos = asset_pos.get("position", {})
-                szi = float(pos.get("szi", 0))
-                if szi == 0:
-                    continue
-                positions.append({
-                    "coin": pos.get("coin", ""),
-                    "size": szi,
-                    "entry_price": float(pos.get("entryPx", 0) or 0),
-                    "unrealized_pnl": float(pos.get("unrealizedPnl", 0) or 0),
-                })
-            return positions
+            by_coin = {}
+            for dex in ("", "xyz"):
+                try:
+                    kwargs = {"dex": dex} if dex else {}
+                    user_state = self._info.user_state(self._account_address, **kwargs)
+                except TypeError:
+                    # Older SDK without dex kwarg — main dex only.
+                    if dex:
+                        continue
+                    user_state = self._info.user_state(self._account_address)
+                for row in self._positions_from_user_state(user_state):
+                    coin = row.get("coin", "")
+                    bare = coin.split(":", 1)[-1].upper() if coin else ""
+                    if bare:
+                        by_coin[bare] = row
+            return list(by_coin.values())
         except Exception:
             return []
 
