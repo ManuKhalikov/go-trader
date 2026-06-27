@@ -391,9 +391,16 @@ func runManualOpen(args []string) int {
 			var slStderr string
 			var slErr error
 			for attempt := 1; attempt <= slMaxAttempts; attempt++ {
-				slResult, slStderr, slErr = RunHyperliquidUpdateStopLoss(script, sc.Symbol, *side, fillQty, stopLossTriggerPx, 0)
+				cancelOID := int64(0)
+				if attempt > 1 && stopLossOID > 0 {
+					cancelOID = stopLossOID
+				}
+				slResult, slStderr, slErr = RunHyperliquidUpdateStopLoss(script, sc.Symbol, *side, fillQty, stopLossTriggerPx, cancelOID)
 				if slErr == nil && (slResult == nil || (slResult.Error == "" && slResult.StopLossError == "")) {
 					break // placed successfully
+				}
+				if slResult != nil && slResult.StopLossOID > 0 {
+					stopLossOID = slResult.StopLossOID
 				}
 				if attempt < slMaxAttempts {
 					fmt.Fprintf(os.Stderr, "[manual-open] SL arm attempt %d/%d failed — retrying in %v\n", attempt, slMaxAttempts, slRetryDelay)
@@ -425,7 +432,7 @@ func runManualOpen(args []string) int {
 	var tpOIDs []int64
 	tpTierOverride := parseManualTPTiersJSON(*tpTiersJSON)
 	if !*recordOnly && entryATR > 0 && (strategyUsesTieredTPATRClose(sc) || len(tpTierOverride) > 0) {
-		oids, warn, err := placeManualProtectionInline(sc, *side, fillQty, resolvedFillPrice, entryATR, effectiveATRMult, stopLossOID, tpTierOverride)
+		oids, warn, err := placeManualProtectionInline(sc, *side, fillQty, resolvedFillPrice, entryATR, effectiveATRMult, stopLossOID, nil, nil, tpTierOverride)
 		if err != nil || warn != "" {
 			warnNotifier(notifier, fmt.Sprintf(
 				"[manual-open] %s %s: TP placement issue (position open with SL only): err=%v warn=%s",

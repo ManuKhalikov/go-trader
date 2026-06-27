@@ -1454,12 +1454,12 @@ class HyperliquidExchangeAdapter:
 
     def find_resting_stop_loss_orders(
         self, symbol: str, position_side: str
-    ) -> list[tuple[int, float]]:
+    ) -> list[tuple[int, float, float]]:
         """Return resting reduce-only stop-loss triggers for an open position.
 
-        Sorted newest-first by OID so callers can adopt the latest SL and
-        cancel older duplicates. Empty when none are found or when live
-        credentials are unavailable.
+        Each entry is ``(oid, trigger_px, sz)``. Sorted newest-first by OID so
+        callers can adopt the latest SL and cancel older duplicates. Empty when
+        none are found or when live credentials are unavailable.
         """
         if not self._account_address:
             return []
@@ -1469,7 +1469,7 @@ class HyperliquidExchangeAdapter:
         # Long SL closes with a sell (Ask); short SL closes with a buy (Bid).
         want_side = "A" if side == "long" else "B"
         orders = self._info.open_orders(self._account_address) or []
-        found: list[tuple[int, float]] = []
+        found: list[tuple[int, float, float]] = []
         for order in orders:
             if not isinstance(order, dict):
                 continue
@@ -1492,9 +1492,64 @@ class HyperliquidExchangeAdapter:
             if oid <= 0:
                 continue
             trigger_px = _safe_float(order.get("triggerPx"))
-            found.append((oid, trigger_px))
+            sz = _safe_float(order.get("sz"))
+            if sz <= 0:
+                sz = _safe_float(order.get("origSz"))
+            found.append((oid, trigger_px, sz))
         found.sort(key=lambda item: item[0], reverse=True)
         return found
+
+    def find_resting_tp_limit_orders(
+        self, symbol: str, position_side: str
+    ) -> list[tuple[int, float, float]]:
+        """Return resting reduce-only TP limit orders for an open position.
+
+        Each entry is ``(oid, limit_px, sz)``. Non-trigger limit orders on the
+        close side, sorted newest-first by OID.
+        """
+        if not self._account_address:
+            return []
+        side = str(position_side or "").lower()
+        if side not in ("long", "short"):
+            return []
+        want_side = "A" if side == "long" else "B"
+        orders = self._info.open_orders(self._account_address) or []
+        found: list[tuple[int, float, float]] = []
+        for order in orders:
+            if not isinstance(order, dict):
+                continue
+            if order.get("coin") != symbol:
+                continue
+            if not order.get("reduceOnly", False):
+                continue
+            if str(order.get("side", "")).upper() != want_side:
+                continue
+            if order.get("isTrigger", False):
+                continue
+            order_type = str(order.get("orderType", ""))
+            if "Stop" in order_type:
+                continue
+            trigger_cond = str(order.get("triggerCondition", ""))
+            if "stop" in trigger_cond.lower():
+                continue
+            oid = _safe_int(order.get("oid"))
+            if oid <= 0:
+                continue
+            limit_px = _safe_float(order.get("limitPx"))
+            if limit_px <= 0:
+                limit_px = _safe_float(order.get("px"))
+            sz = _safe_float(order.get("sz"))
+            if sz <= 0:
+                sz = _safe_float(order.get("origSz"))
+            found.append((oid, limit_px, sz))
+        found.sort(key=lambda item: item[0], reverse=True)
+        return found
+
+    def perps_price_tick(self, symbol: str) -> float:
+        """Minimum price increment for perps trigger/limit orders on ``symbol``."""
+        sz_decimals = self._sz_decimals(symbol) if self._info else 3
+        px_decimals = max(0, 6 - int(sz_decimals))
+        return 10 ** (-px_decimals)
 
     def open_order_oids(self, symbol: str | None = None) -> set[int]:
         """Return currently open order OIDs, optionally filtered by coin (#601).

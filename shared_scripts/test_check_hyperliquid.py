@@ -513,6 +513,9 @@ class TestUpdateStopLoss:
         open_oids_side_effect=None,
         lookup_result=_UNSET,
         cancel_oid=11111,
+        resting_sls=None,
+        perps_price_tick=0.01,
+        min_lot=0.0001,
     ):
         mod, spec = _load_check_module()
         spec.loader.exec_module(mod)
@@ -521,10 +524,16 @@ class TestUpdateStopLoss:
         mock_adapter = MagicMock()
         mock_adapter_cls.return_value = mock_adapter
         mock_adapter.round_perps_trigger_px.side_effect = lambda _symbol, px: round(px, 2)
+        mock_adapter.perps_price_tick.return_value = perps_price_tick
+        mock_adapter._sz_decimals.return_value = 4
         if open_oids_side_effect is not None:
             mock_adapter.open_order_oids.side_effect = open_oids_side_effect
         else:
             mock_adapter.open_order_oids.return_value = {11111} if open_oids is None else open_oids
+        if resting_sls is None:
+            mock_adapter.find_resting_stop_loss_orders.return_value = []
+        else:
+            mock_adapter.find_resting_stop_loss_orders.return_value = resting_sls
         if cancel_side_effect is not None:
             mock_adapter.cancel_trigger_order.side_effect = cancel_side_effect
         if lookup_result is not _UNSET:
@@ -573,6 +582,7 @@ class TestUpdateStopLoss:
 
     def test_open_order_lookup_failure_defers_replacement(self):
         out, adapter = self._run_update(open_oids_side_effect=RuntimeError("indexer down"))
+        adapter.find_resting_stop_loss_orders.assert_not_called()
         adapter.cancel_trigger_order.assert_not_called()
         adapter.place_stop_loss.assert_not_called()
         assert out["open_order_check_error"] == "indexer down"
@@ -594,10 +604,70 @@ class TestUpdateStopLoss:
 
     def test_initial_placement_without_cancel_oid(self):
         out, adapter = self._run_update(cancel_oid=0)
-        adapter.open_order_oids.assert_not_called()
+        adapter.open_order_oids.assert_called_once_with("ETH")
+        adapter.find_resting_stop_loss_orders.assert_called_once_with("ETH", "long")
         adapter.cancel_trigger_order.assert_not_called()
         adapter.place_stop_loss.assert_called_once_with("ETH", 0.5, 3104.12, False)
         assert out["stop_loss_oid"] == 22222
+
+    def test_adopts_existing_sl_cancels_dupes_cancel_oid_zero(self):
+        out, adapter = self._run_update(
+            cancel_oid=0,
+            resting_sls=[(33333, 3104.12, 0.5), (22222, 3104.12, 0.5)],
+            open_oids={33333, 22222},
+        )
+        adapter.place_stop_loss.assert_not_called()
+        assert out["stop_loss_oid"] == 33333
+        assert out.get("stop_loss_adopted_existing") is True
+        adapter.cancel_order_by_oid.assert_called_once_with("ETH", 22222)
+
+    def test_open_order_fetch_failure_defers_even_without_cancel_oid(self):
+        out, adapter = self._run_update(cancel_oid=0, open_oids_side_effect=RuntimeError("indexer down"))
+        adapter.place_stop_loss.assert_not_called()
+        assert out["open_order_check_error"] == "indexer down"
+        assert "stop_loss_oid" not in out
+
+    def test_echo_within_one_tick_does_not_place(self):
+        out, adapter = self._run_update(
+            cancel_oid=0,
+            resting_sls=[(44444, 3104.11, 0.5)],
+            open_oids={44444},
+            perps_price_tick=0.01,
+        )
+        adapter.place_stop_loss.assert_not_called()
+        assert out["stop_loss_oid"] == 44444
+        assert out.get("stop_loss_adopted_existing") is True
+
+    def test_echo_with_missing_sz_still_echoes(self):
+        out, adapter = self._run_update(
+            cancel_oid=0,
+            resting_sls=[(44444, 3104.12, 0.0)],
+            open_oids={44444},
+            perps_price_tick=0.01,
+        )
+        adapter.place_stop_loss.assert_not_called()
+        assert out["stop_loss_oid"] == 44444
+
+    def test_echo_two_ticks_off_replaces(self):
+        out, adapter = self._run_update(
+            cancel_oid=0,
+            resting_sls=[(44444, 3104.10, 0.5)],
+            open_oids={44444},
+            perps_price_tick=0.01,
+        )
+        adapter.cancel_order_by_oid.assert_called_once_with("ETH", 44444)
+        adapter.place_stop_loss.assert_called_once_with("ETH", 0.5, 3104.12, False)
+        assert out["stop_loss_oid"] == 22222
+
+    def test_echo_tick_tolerance_scales_with_sz_decimals(self):
+        mod, spec = _load_check_module()
+        spec.loader.exec_module(mod)
+        mock_adapter = MagicMock()
+        mock_adapter.perps_price_tick.return_value = 0.1
+        assert mod._sl_price_within_echo_tolerance(mock_adapter, "BTC", 60000.1, 60000.0)
+        assert not mod._sl_price_within_echo_tolerance(mock_adapter, "BTC", 59999.8, 60000.0)
+        mock_adapter.perps_price_tick.return_value = 0.01
+        assert mod._sl_price_within_echo_tolerance(mock_adapter, "ETH", 3104.11, 3104.12)
 
 
 class TestCloseFullPosition:
@@ -868,9 +938,9 @@ class TestSyncProtection:
         mock_adapter_cls.return_value = mock_adapter
         mock_adapter.open_order_oids.return_value = {5555, 4444, 3333}
         mock_adapter.find_resting_stop_loss_orders.return_value = [
-            (5555, 62649.0),
-            (4444, 62649.0),
-            (3333, 62649.0),
+            (5555, 62649.0, 0.002),
+            (4444, 62649.0, 0.002),
+            (3333, 62649.0, 0.002),
         ]
         mock_adapter.round_perps_trigger_px.side_effect = lambda _sym, px: round(px, 4)
         mock_adapter.round_size.side_effect = lambda _sym, sz: round(sz, 3)

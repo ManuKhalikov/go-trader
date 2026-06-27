@@ -72,6 +72,8 @@ func placeManualProtectionInline(
 	side string,
 	fillQty, fillPrice, entryATR, effectiveSLATRMult float64,
 	stopLossOID int64,
+	tpOIDs []int64,
+	tpArmedTiers []bool,
 	tpTierOverride []hlProtectionTier,
 ) ([]int64, string, error) {
 	tiers := tpTierOverride
@@ -93,7 +95,7 @@ func placeManualProtectionInline(
 
 	result, stderr, err := runHLSyncProtectionFn(
 		sc.Script, sc.Symbol, side, fillQty, fillPrice, entryATR,
-		slMultForSync, tiers, stopLossOID, nil, nil, false, nil, nil, nil,
+		slMultForSync, tiers, stopLossOID, tpOIDs, tpArmedTiers, false, nil, nil, nil,
 	)
 	if stderr != "" {
 		fmt.Fprintf(os.Stderr, "[manual-open] sync-protection stderr: %s\n", stderr)
@@ -153,6 +155,42 @@ func parseManualTPTiersJSON(raw string) []hlProtectionTier {
 		return nil
 	}
 	return normalizeProtectionTierFractions(tiers)
+}
+
+// protectionTPSatisfied reports whether every configured TP tier has a resting
+// OID or was previously armed (filled tier with OID zeroed).
+func protectionTPSatisfied(sc StrategyConfig, tpOIDs []int64, tpArmedTiers []bool, tpTierOverride []hlProtectionTier) bool {
+	tiers := tpTierOverride
+	if len(tiers) == 0 {
+		tiers = strategyTPTiers(sc)
+	}
+	if len(tiers) == 0 {
+		return true
+	}
+	for i := range tiers {
+		oid := int64(0)
+		if i < len(tpOIDs) {
+			oid = tpOIDs[i]
+		}
+		armed := false
+		if i < len(tpArmedTiers) {
+			armed = tpArmedTiers[i]
+		}
+		if oid <= 0 && !armed {
+			return false
+		}
+	}
+	return true
+}
+
+// cloneBools returns a defensive copy of src.
+func cloneBools(src []bool) []bool {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]bool, len(src))
+	copy(out, src)
+	return out
 }
 
 // manualOpenCleanupCloseFn is the close path used by attemptManualOpenCleanup.

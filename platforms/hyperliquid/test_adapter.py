@@ -659,8 +659,8 @@ class TestStopLossPlacement:
                 "orderType": "Stop Market",
             },
         ]
-        assert adapter.find_resting_stop_loss_orders("BTC", "long") == [(100, 62649.0)]
-        assert adapter.find_resting_stop_loss_orders("BTC", "short") == [(200, 70000.0)]
+        assert adapter.find_resting_stop_loss_orders("BTC", "long") == [(100, 62649.0, 0.0)]
+        assert adapter.find_resting_stop_loss_orders("BTC", "short") == [(200, 70000.0, 0.0)]
 
 
 # ─── userFills Lookup (#585) ──────────────────────────

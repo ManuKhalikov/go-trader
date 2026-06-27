@@ -364,6 +364,113 @@ def _oid_is_open(open_oids: set[int] | None, oid: int) -> bool:
     return oid > 0 and open_oids is not None and int(oid) in open_oids
 
 
+# Echo-path tolerances for run_update_stop_loss when an existing resting SL
+# already matches the requested protection intent.
+SL_ECHO_PRICE_TOLERANCE_TICKS = 1
+SL_ECHO_SIZE_TOLERANCE_LOTS = 1
+
+
+def _perps_price_tick(adapter, symbol: str) -> float:
+    if hasattr(adapter, "perps_price_tick"):
+        return float(adapter.perps_price_tick(symbol))
+    sz_decimals = adapter._sz_decimals(symbol) if hasattr(adapter, "_sz_decimals") else 3
+    px_decimals = max(0, 6 - int(sz_decimals))
+    return 10 ** (-px_decimals)
+
+
+def _min_lot_size(adapter, symbol: str) -> float:
+    if hasattr(adapter, "_sz_decimals"):
+        return 10 ** (-int(adapter._sz_decimals(symbol)))
+    return 1e-4
+
+
+def _sl_price_within_echo_tolerance(
+    adapter, symbol: str, adopted_px: float, requested_px: float
+) -> bool:
+    if adopted_px <= 0 or requested_px <= 0:
+        return False
+    tick = _perps_price_tick(adapter, symbol)
+    return abs(adopted_px - requested_px) <= SL_ECHO_PRICE_TOLERANCE_TICKS * tick
+
+
+def _sl_size_within_echo_tolerance(
+    adapter, symbol: str, adopted_sz: float, requested_sz: float
+) -> bool:
+    if adopted_sz <= 0 or requested_sz <= 0:
+        return False
+    min_lot = _min_lot_size(adapter, symbol)
+    tol = max(min_lot, SL_ECHO_SIZE_TOLERANCE_LOTS * min_lot)
+    return abs(adopted_sz - requested_sz) <= tol
+
+
+def _sl_matches_echo(
+    adapter, symbol: str, adopted_px: float, adopted_sz: float, requested_px: float, requested_sz: float
+) -> bool:
+    price_ok = _sl_price_within_echo_tolerance(adapter, symbol, adopted_px, requested_px)
+    if not price_ok:
+        return False
+    # HL open-order payloads occasionally omit sz immediately after placement.
+    if adopted_sz <= 0:
+        return True
+    return _sl_size_within_echo_tolerance(adapter, symbol, adopted_sz, requested_sz)
+
+
+def _tp_price_within_echo_tolerance(
+    adapter, symbol: str, resting_px: float, target_px: float
+) -> bool:
+    return _sl_price_within_echo_tolerance(adapter, symbol, resting_px, target_px)
+
+
+def _cancel_duplicate_sl_oids(adapter, symbol: str, resting_sls: list, skip_oid: int = 0) -> None:
+    for entry in resting_sls:
+        dup_oid = int(entry[0])
+        if dup_oid <= 0 or dup_oid == skip_oid:
+            continue
+        try:
+            adapter.cancel_order_by_oid(symbol, dup_oid)
+        except Exception as ce:
+            print(
+                f"[WARN] cancel duplicate SL OID={dup_oid} failed: {ce}",
+                file=sys.stderr,
+            )
+
+
+def _adopt_or_dedupe_stop_loss(adapter, symbol: str, side: str):
+    """Adopt newest resting SL and cancel older duplicates.
+
+    Returns ``(primary_oid, trigger_px, size, adopted)`` where *adopted* is
+    True when at least one resting SL was found (primary may still be cancelled
+    by the caller when echo does not match).
+    """
+    resting_sls = adapter.find_resting_stop_loss_orders(symbol, side)
+    if not resting_sls:
+        return 0, 0.0, 0.0, False
+    adopted_oid, adopted_px, adopted_sz = resting_sls[0]
+    _cancel_duplicate_sl_oids(adapter, symbol, resting_sls[1:])
+    return int(adopted_oid), float(adopted_px), float(adopted_sz), True
+
+
+def _find_tp_limit_at_price(adapter, symbol: str, side: str, target_px: float):
+    """Return newest resting TP limit matching *target_px* within echo tolerance."""
+    matches = []
+    for oid, limit_px, sz in adapter.find_resting_tp_limit_orders(symbol, side):
+        if _tp_price_within_echo_tolerance(adapter, symbol, limit_px, target_px):
+            matches.append((oid, limit_px, sz))
+    if not matches:
+        return None
+    matches.sort(key=lambda item: item[0], reverse=True)
+    primary = matches[0]
+    for dup_oid, _, _ in matches[1:]:
+        try:
+            adapter.cancel_order_by_oid(symbol, dup_oid)
+        except Exception as ce:
+            print(
+                f"[WARN] cancel duplicate TP OID={dup_oid} failed: {ce}",
+                file=sys.stderr,
+            )
+    return primary
+
+
 def _oid_filled_externally(adapter, oid: int, since_ms: int, fill_hints=None) -> dict:
     """Check whether ``oid`` has filled on-chain by querying userFills.
 
@@ -649,21 +756,14 @@ def run_sync_protection(
             # persist the OID). Adopt the newest resting SL instead of stacking
             # duplicates every scheduler interval (#manual-open duplicate SL).
             if stop_loss_oid <= 0 and open_oids is not None:
-                resting_sls = adapter.find_resting_stop_loss_orders(symbol, side)
-                if resting_sls:
-                    adopted_oid, adopted_px = resting_sls[0]
+                adopted_oid, adopted_px, _adopted_sz, adopted = _adopt_or_dedupe_stop_loss(
+                    adapter, symbol, side
+                )
+                if adopted:
                     stop_loss_oid = adopted_oid
                     out["stop_loss_adopted_existing"] = True
                     if adopted_px > 0:
                         out["stop_loss_trigger_px"] = adopted_px
-                    for dup_oid, _ in resting_sls[1:]:
-                        try:
-                            adapter.cancel_order_by_oid(symbol, dup_oid)
-                        except Exception as ce:
-                            print(
-                                f"[WARN] cancel duplicate SL OID={dup_oid} failed: {ce}",
-                                file=sys.stderr,
-                            )
 
             # HL's open-order indexer can lag immediately after placement; re-fetch
             # before treating a known SL OID as missing/cancelled (#manual-open dup SL).
@@ -832,6 +932,12 @@ def run_sync_protection(
                     if prev_oid <= 0 and tier_armed:
                         tp_oids_out[idx] = 0
                         continue
+
+                    if prev_oid <= 0 and open_oids is not None:
+                        matched = _find_tp_limit_at_price(adapter, symbol, side, rounded_px)
+                        if matched is not None:
+                            tp_oids_out[idx] = int(matched[0])
+                            continue
 
                     action, fill = _resolve_missing_oid(prev_oid)
                     if action == "filled":
@@ -1213,6 +1319,7 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
     sl_filled_externally = False
     resting_oid = 0
     open_order_check_error = ""
+    sl_adopted_existing = False
 
     try:
         from adapter import HyperliquidExchangeAdapter
@@ -1228,16 +1335,38 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
             sys.exit(1)
 
         open_oids = None
-        if cancel_attempted:
-            try:
-                open_oids = adapter.open_order_oids(symbol)
-            except Exception as oe:
-                open_order_check_error = str(oe)
-                print(f"[WARN] open_order_oids({symbol}) failed: {oe}; deferring trailing SL replacement", file=sys.stderr)
+        try:
+            open_oids = adapter.open_order_oids(symbol)
+        except Exception as oe:
+            open_order_check_error = str(oe)
+            print(
+                f"[WARN] open_order_oids({symbol}) failed: {oe}; deferring SL update",
+                file=sys.stderr,
+            )
+
+        sl_is_buy = side == "short"
+        trigger_px = adapter.round_perps_trigger_px(symbol, trigger_px)
+        should_place = open_oids is not None
+
+        if open_oids is not None:
+            adopted_oid, adopted_px, adopted_sz, adopted = _adopt_or_dedupe_stop_loss(
+                adapter, symbol, side
+            )
+            if adopted:
+                sl_adopted_existing = True
+                if _sl_matches_echo(adapter, symbol, adopted_px, adopted_sz, trigger_px, size):
+                    resting_oid = adopted_oid
+                    should_place = False
+                else:
+                    try:
+                        adapter.cancel_order_by_oid(symbol, adopted_oid)
+                    except Exception as ce:
+                        sl_err = f"cancel mismatched adopted SL OID={adopted_oid}: {ce}"
+                        should_place = False
+                        print(f"[WARN] {sl_err}", file=sys.stderr)
 
         fill_check_since_ms = int(time.time() * 1000) - 7 * 24 * 3600 * 1000
-        should_place = True
-        if cancel_attempted:
+        if should_place and cancel_attempted:
             if open_oids is None:
                 should_place = False
             elif _oid_is_open(open_oids, cancel_oid):
@@ -1255,8 +1384,6 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
                     should_place = False
                     print(f"[WARN] stop-loss OID={cancel_oid} already filled on-chain; not re-placing — reconciler will book the close", file=sys.stderr)
 
-        sl_is_buy = side == "short"
-        trigger_px = adapter.round_perps_trigger_px(symbol, trigger_px)
         if should_place:
             try:
                 sl_resp = adapter.place_stop_loss(symbol, size, trigger_px, sl_is_buy)
@@ -1283,6 +1410,8 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
         }
         if resting_oid:
             out["stop_loss_oid"] = resting_oid
+        if sl_adopted_existing:
+            out["stop_loss_adopted_existing"] = True
         if cancel_err:
             out["cancel_stop_loss_error"] = cancel_err
         if cancel_succeeded:

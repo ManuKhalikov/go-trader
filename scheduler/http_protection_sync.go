@@ -65,13 +65,14 @@ func (ss *StatusServer) handleProtectionSyncHTTP(w http.ResponseWriter, r *http.
 	// Snapshot position fields under read lock — avoids holding the lock during
 	// the Python subprocess below, which can take several seconds.
 	type posSnap struct {
-		qty      float64
-		avgCost  float64
-		entryATR float64
-		side     string
-		slOID    int64
-		tpOIDs   []int64
-		symKey   string // map key in StrategyState.Positions
+		qty          float64
+		avgCost      float64
+		entryATR     float64
+		side         string
+		slOID        int64
+		tpOIDs       []int64
+		tpArmedTiers []bool
+		symKey       string // map key in StrategyState.Positions
 	}
 	var snap posSnap
 	var posFound bool
@@ -88,13 +89,14 @@ func (ss *StatusServer) handleProtectionSyncHTTP(w http.ResponseWriter, r *http.
 			}
 			if sym == body.Symbol {
 				snap = posSnap{
-					qty:      pos.Quantity,
-					avgCost:  pos.AvgCost,
-					entryATR: pos.EntryATR,
-					side:     pos.Side,
-					slOID:    pos.StopLossOID,
-					tpOIDs:   cloneInt64s(pos.TPOIDs),
-					symKey:   k,
+					qty:          pos.Quantity,
+					avgCost:      pos.AvgCost,
+					entryATR:     pos.EntryATR,
+					side:         pos.Side,
+					slOID:        pos.StopLossOID,
+					tpOIDs:       cloneInt64s(pos.TPOIDs),
+					tpArmedTiers: cloneBools(pos.TPArmedTiers),
+					symKey:       k,
 				}
 				posFound = true
 				break
@@ -120,24 +122,25 @@ func (ss *StatusServer) handleProtectionSyncHTTP(w http.ResponseWriter, r *http.
 		return
 	}
 
-	// Check if TPs are already in place.
-	for _, oid := range snap.tpOIDs {
-		if oid > 0 {
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
-				"status":  "ok",
-				"message": "TPs already in place",
-				"tp_oids": snap.tpOIDs,
-			})
-			return
-		}
+	// Early exit when every configured tier is armed or already filled.
+	tpTierOverride := parseManualTPTiersJSON(body.TPTiers)
+	if protectionTPSatisfied(sc, snap.tpOIDs, snap.tpArmedTiers, tpTierOverride) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"status":  "ok",
+			"message": "TPs already in place",
+			"tp_oids": snap.tpOIDs,
+		})
+		return
 	}
 
 	// Place TPs. slMultForSync=0: SL already armed (stopLossOID>0), placeManualProtectionInline
 	// zeroes it to avoid a duplicate stop — pass 0 explicitly so the same logic applies
 	// whether or not stopLossOID is set.
-	tpTierOverride := parseManualTPTiersJSON(body.TPTiers)
-	oids, warn, err := placeManualProtectionInline(sc, snap.side, snap.qty, snap.avgCost, snap.entryATR, 0, snap.slOID, tpTierOverride)
+	oids, warn, err := placeManualProtectionInline(
+		sc, snap.side, snap.qty, snap.avgCost, snap.entryATR, 0, snap.slOID,
+		snap.tpOIDs, snap.tpArmedTiers, tpTierOverride,
+	)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)

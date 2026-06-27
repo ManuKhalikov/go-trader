@@ -6,6 +6,25 @@ import (
 	"testing"
 )
 
+func TestProtectionTPSatisfied(t *testing.T) {
+	sc := StrategyConfig{
+		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"},
+	}
+	tiers := strategyTPTiers(sc)
+	if len(tiers) < 2 {
+		t.Fatalf("expected tiered strategy, got %d tiers", len(tiers))
+	}
+	if protectionTPSatisfied(sc, []int64{100, 0}, []bool{true, false}, nil) {
+		t.Fatal("tier 2 missing OID and not armed should not satisfy")
+	}
+	if !protectionTPSatisfied(sc, []int64{100, 200}, []bool{true, true}, nil) {
+		t.Fatal("all tier OIDs set should satisfy")
+	}
+	if !protectionTPSatisfied(sc, []int64{100, 0}, []bool{true, true}, nil) {
+		t.Fatal("filled tier with armed=true should satisfy")
+	}
+}
+
 func TestComputeFallbackATR(t *testing.T) {
 	cases := []struct {
 		fillPrice float64
@@ -46,7 +65,7 @@ func TestPlaceManualProtectionInline_NoTiers(t *testing.T) {
 		Platform:      "hyperliquid",
 		CloseStrategy: &StrategyRef{Name: "tp_at_pct"}, // not tiered_tp_atr*
 	}
-	oids, warn, err := placeManualProtectionInline(sc, "long", 0.8, 2500, 12.5, 1.0, 0, nil)
+	oids, warn, err := placeManualProtectionInline(sc, "long", 0.8, 2500, 12.5, 1.0, 0, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -63,7 +82,7 @@ func TestPlaceManualProtectionInline_SkipsSLSyncWhenAlreadyArmed(t *testing.T) {
 	defer func() { runHLSyncProtectionFn = orig }()
 
 	var gotSLMult float64
-	runHLSyncProtectionFn = func(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, _ []bool, _ bool, _ []bool, _ []int64, _ []byte) (*HyperliquidProtectionSyncResult, string, error) {
+	runHLSyncProtectionFn = func(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, tpArmedTiers []bool, _ bool, _ []bool, _ []int64, _ []byte) (*HyperliquidProtectionSyncResult, string, error) {
 		gotSLMult = stopLossATRMult
 		return &HyperliquidProtectionSyncResult{TPOIDs: []int64{1001}}, "", nil
 	}
@@ -73,7 +92,7 @@ func TestPlaceManualProtectionInline_SkipsSLSyncWhenAlreadyArmed(t *testing.T) {
 		Platform:      "hyperliquid",
 		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"},
 	}
-	_, _, err := placeManualProtectionInline(sc, "long", 0.002, 63854, 949, 2.0, 12345, nil)
+	_, _, err := placeManualProtectionInline(sc, "long", 0.002, 63854, 949, 2.0, 12345, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -87,7 +106,7 @@ func TestPlaceManualProtectionInline_PassesSLSyncWhenNotYetArmed(t *testing.T) {
 	defer func() { runHLSyncProtectionFn = orig }()
 
 	var gotSLMult float64
-	runHLSyncProtectionFn = func(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, _ []bool, _ bool, _ []bool, _ []int64, _ []byte) (*HyperliquidProtectionSyncResult, string, error) {
+	runHLSyncProtectionFn = func(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, tpArmedTiers []bool, _ bool, _ []bool, _ []int64, _ []byte) (*HyperliquidProtectionSyncResult, string, error) {
 		gotSLMult = stopLossATRMult
 		return &HyperliquidProtectionSyncResult{TPOIDs: []int64{1001}}, "", nil
 	}
@@ -97,7 +116,7 @@ func TestPlaceManualProtectionInline_PassesSLSyncWhenNotYetArmed(t *testing.T) {
 		Platform:      "hyperliquid",
 		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"},
 	}
-	_, _, err := placeManualProtectionInline(sc, "long", 0.002, 63854, 949, 2.0, 0, nil)
+	_, _, err := placeManualProtectionInline(sc, "long", 0.002, 63854, 949, 2.0, 0, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,7 +129,7 @@ func TestPlaceManualProtectionInline_TPErrorsSurface(t *testing.T) {
 	orig := runHLSyncProtectionFn
 	defer func() { runHLSyncProtectionFn = orig }()
 
-	runHLSyncProtectionFn = func(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, _ []bool, _ bool, _ []bool, _ []int64, _ []byte) (*HyperliquidProtectionSyncResult, string, error) {
+	runHLSyncProtectionFn = func(script, symbol, side string, size, avgCost, entryATR, stopLossATRMult float64, tiers []hlProtectionTier, stopLossOID int64, tpOIDs []int64, tpArmedTiers []bool, _ bool, _ []bool, _ []int64, _ []byte) (*HyperliquidProtectionSyncResult, string, error) {
 		return &HyperliquidProtectionSyncResult{
 			TPOIDs:   []int64{1001, 1002},
 			TPErrors: []string{"TP1: rejected", ""},
@@ -124,7 +143,7 @@ func TestPlaceManualProtectionInline_TPErrorsSurface(t *testing.T) {
 		Symbol:        "ETH",
 		CloseStrategy: &StrategyRef{Name: "tiered_tp_atr_live"},
 	}
-	oids, warn, err := placeManualProtectionInline(sc, "long", 0.8, 2500, 12.5, 1.0, 0, nil)
+	oids, warn, err := placeManualProtectionInline(sc, "long", 0.8, 2500, 12.5, 1.0, 0, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
