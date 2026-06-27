@@ -663,6 +663,9 @@ def run_sync_protection(
         print(json.dumps({"error": "size must be > 0"}, cls=SafeEncoder))
         sys.exit(1)
 
+    from adapter import resolve_hl_symbol
+    symbol = resolve_hl_symbol(symbol)
+
     out = {
         "platform": "hyperliquid",
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -1322,8 +1325,9 @@ def run_update_stop_loss(symbol, side, size, trigger_px, mode, cancel_oid=0):
     sl_adopted_existing = False
 
     try:
-        from adapter import HyperliquidExchangeAdapter
+        from adapter import HyperliquidExchangeAdapter, resolve_hl_symbol
         adapter = HyperliquidExchangeAdapter()
+        symbol = resolve_hl_symbol(symbol)
 
         side = side.lower()
         if side not in ("long", "short"):

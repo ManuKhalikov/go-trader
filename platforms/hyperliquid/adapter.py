@@ -65,6 +65,12 @@ def _hl_info_dex(symbol: str) -> str:
     return ""
 
 
+def _coins_match(coin_a: str, coin_b: str) -> bool:
+    """True when two coin fields refer to the same HL perp (bare vs qualified)."""
+    if not coin_a or not coin_b:
+        return False
+    return resolve_hl_symbol(str(coin_a)) == resolve_hl_symbol(str(coin_b))
+
 # /info `spotMeta` + `meta` rarely change (HL lists new coins on the order of
 # weeks). The SDK's Info constructor re-fetches both on every instantiation,
 # which costs 4 /info calls per scheduler cycle (signal-check + sync-protection
@@ -1468,12 +1474,13 @@ class HyperliquidExchangeAdapter:
             return []
         # Long SL closes with a sell (Ask); short SL closes with a buy (Bid).
         want_side = "A" if side == "long" else "B"
+        want_coin = resolve_hl_symbol(symbol)
         orders = self._info.open_orders(self._account_address) or []
         found: list[tuple[int, float, float]] = []
         for order in orders:
             if not isinstance(order, dict):
                 continue
-            if order.get("coin") != symbol:
+            if not _coins_match(order.get("coin", ""), want_coin):
                 continue
             if not order.get("reduceOnly", False):
                 continue
@@ -1513,12 +1520,13 @@ class HyperliquidExchangeAdapter:
         if side not in ("long", "short"):
             return []
         want_side = "A" if side == "long" else "B"
+        want_coin = resolve_hl_symbol(symbol)
         orders = self._info.open_orders(self._account_address) or []
         found: list[tuple[int, float, float]] = []
         for order in orders:
             if not isinstance(order, dict):
                 continue
-            if order.get("coin") != symbol:
+            if not _coins_match(order.get("coin", ""), want_coin):
                 continue
             if not order.get("reduceOnly", False):
                 continue
@@ -1562,12 +1570,13 @@ class HyperliquidExchangeAdapter:
         """
         if not self._account_address:
             return set()
+        want_coin = resolve_hl_symbol(symbol) if symbol else None
         orders = self._info.open_orders(self._account_address)
         out: set[int] = set()
         for order in orders or []:
             if not isinstance(order, dict):
                 continue
-            if symbol and order.get("coin") != symbol:
+            if want_coin and not _coins_match(order.get("coin", ""), want_coin):
                 continue
             oid = _safe_int(order.get("oid"))
             if oid:

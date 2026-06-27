@@ -4,6 +4,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -1047,5 +1049,81 @@ func TestManualStampRegimeOnPosition(t *testing.T) {
 	stampPositionRegimeIfOpened(ssEmpty, sc.Symbol, RegimePayload{}, sc, rc)
 	if got := ssEmpty.Positions["ETH"].Regime; got != "" {
 		t.Errorf("empty payload must not stamp a regime, got %q", got)
+	}
+}
+
+// TestRunManualCloseHIP3SymbolOverrideDryRun verifies emergency-close style
+// --symbol xyz:SP500 finds a position stored under bare key SP500.
+func TestRunManualCloseHIP3SymbolOverrideDryRun(t *testing.T) {
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "state.db")
+	cfgPath := filepath.Join(dir, "config.json")
+	cfgJSON := fmt.Sprintf(`{
+  "config_version": 15,
+  "interval_seconds": 300,
+  "log_dir": %q,
+  "db_file": %q,
+  "auto_update": "off",
+  "discord": {"enabled": false},
+  "telegram": {"enabled": false},
+  "strategies": [{
+    "id": "hl-roundtable-sp500",
+    "type": "manual",
+    "platform": "hyperliquid",
+    "symbol": "SP500",
+    "script": "shared_scripts/check_hyperliquid.py",
+    "args": ["hold", "SP500", "1h", "--mode=paper"],
+    "capital": 100,
+    "max_drawdown_pct": 10,
+    "leverage": 10,
+    "direction": "long",
+    "margin_mode": "isolated"
+  }]
+}`, dir, dbPath)
+	if err := os.WriteFile(cfgPath, []byte(cfgJSON), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := LoadConfigForProbe(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfigForProbe: %v", err)
+	}
+	db, err := OpenStateDB(dbPath)
+	if err != nil {
+		t.Fatalf("OpenStateDB: %v", err)
+	}
+	defer db.Close()
+
+	stratID := "hl-roundtable-sp500"
+	state := &AppState{
+		Strategies: map[string]*StrategyState{
+			stratID: {
+				ID:       stratID,
+				Type:     "manual",
+				Platform: "hyperliquid",
+				Positions: map[string]*Position{
+					"SP500": {
+						Symbol:          "SP500",
+						Quantity:        0.013,
+						Side:            "long",
+						OwnerStrategyID: stratID,
+						AvgCost:         7332.1,
+					},
+				},
+			},
+		},
+	}
+	if err := SaveStateWithDB(state, cfg, db); err != nil {
+		t.Fatalf("SaveStateWithDB: %v", err)
+	}
+
+	code := runManualClose([]string{
+		stratID,
+		"--config", cfgPath,
+		"--symbol", "xyz:SP500",
+		"--dry-run",
+	})
+	if code != 0 {
+		t.Fatalf("runManualClose dry-run = %d, want 0", code)
 	}
 }

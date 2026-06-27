@@ -50,3 +50,27 @@ func TestHlCoinsMatch(t *testing.T) {
 		t.Error("expected BTC and ETH not to match")
 	}
 }
+
+func TestLookupStrategyPositionHIP3QualifiedLookup(t *testing.T) {
+	ss := &StrategyState{
+		Positions: map[string]*Position{
+			"SP500": {
+				Symbol:          "SP500",
+				Quantity:        0.013,
+				Side:            "long",
+				OwnerStrategyID: "hl-roundtable-sp500",
+				AvgCost:         7332.1,
+			},
+		},
+	}
+	pos, key := lookupStrategyPosition(ss, "xyz:SP500")
+	if pos == nil {
+		t.Fatal("expected position for xyz:SP500 lookup")
+	}
+	if key != "SP500" {
+		t.Errorf("key = %q, want SP500", key)
+	}
+	if pos.Quantity != 0.013 {
+		t.Errorf("quantity = %g, want 0.013", pos.Quantity)
+	}
+}

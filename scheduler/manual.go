@@ -580,8 +580,8 @@ func runManualAdd(args []string) int {
 		fmt.Fprintln(os.Stderr, "error: strategy has a pending circuit-breaker close — manual-add blocked")
 		return 1
 	}
-	pos, exists := ss.Positions[sc.Symbol]
-	if !exists || pos == nil {
+	pos, _ := lookupStrategyPosition(ss, sc.Symbol)
+	if pos == nil {
 		fmt.Fprintf(os.Stderr, "error: no open position for %s/%s; open one first with manual-open\n", strategyID, sc.Symbol)
 		return 1
 	}
@@ -714,15 +714,20 @@ func runManualClose(args []string) int {
 		return 1
 	}
 	ss := state.Strategies[strategyID]
-	closeSymbol := sc.Symbol
-	if *symbolOverride != "" {
-		closeSymbol = toHyperliquidCoin(strings.TrimSpace(*symbolOverride))
-	}
-	pos := ss.Positions[closeSymbol]
-	if pos == nil {
-		fmt.Fprintf(os.Stderr, "error: no open position found for %s/%s\n", strategyID, closeSymbol)
+	if ss == nil {
+		fmt.Fprintf(os.Stderr, "error: no state for strategy %q\n", strategyID)
 		return 1
 	}
+	lookupSym := sc.Symbol
+	if *symbolOverride != "" {
+		lookupSym = toHyperliquidCoin(strings.TrimSpace(*symbolOverride))
+	}
+	pos, _ := lookupStrategyPosition(ss, lookupSym)
+	if pos == nil {
+		fmt.Fprintf(os.Stderr, "error: no open position found for %s/%s\n", strategyID, lookupSym)
+		return 1
+	}
+	closeSymbol := toHyperliquidCoin(pos.Symbol)
 	if !manualPositionOwnedByStrategy(pos, strategyID) {
 		fmt.Fprintf(os.Stderr, "error: position %s/%s is owned by %q, not %q\n", strategyID, closeSymbol, pos.OwnerStrategyID, strategyID)
 		return 1
@@ -1308,7 +1313,7 @@ func openTradeSide(posSide string) string {
 // doesn't even spawn a subprocess then — so status/dashboard show a regime
 // for manual strategies without a position.
 func runManualCloseEval(sc StrategyConfig, ss *StrategyState, cfg *Config, notifier *MultiNotifier, logger *StrategyLogger) (float64, float64, bool) {
-	pos := ss.Positions[sc.Symbol]
+	pos, _ := lookupStrategyPosition(ss, sc.Symbol)
 	if pos == nil {
 		return 0, 0, true // flat — nothing to do
 	}
