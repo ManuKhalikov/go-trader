@@ -425,6 +425,27 @@ func runManualOpen(args []string) int {
 		}
 	}
 
+	// Agent HTTP path: never leave a naked position when SL was required but failed.
+	if *signalID != "" && !*recordOnly && stopLossOID == 0 {
+		protectionRequested := *slTriggerPx > 0 || effectiveATRMult > 0
+		attemptedSL := *slTriggerPx > 0 || (effectiveATRMult > 0 && entryATR > 0)
+		if protectionRequested && attemptedSL {
+			fmt.Fprintf(os.Stderr,
+				"error: stop-loss not armed after retries — flattening on-chain fill (signal_id=%s)\n",
+				*signalID)
+			warnNotifier(notifier, fmt.Sprintf(
+				"[manual-open] %s %s: SL not armed after retries (signal_id=%s) — aborting and cleaning up on-chain fill",
+				strategyID, sc.Symbol, *signalID))
+			cleanedUp, cleanupMsg := attemptManualOpenCleanup(sc.Symbol, fillQty, stopLossOID, nil)
+			if !cleanedUp {
+				warnNotifier(notifier, fmt.Sprintf(
+					"[manual-open] %s %s: SL-abort cleanup FAILED: %s — MANUAL INTERVENTION REQUIRED on HL UI (side=%s qty=%.6f)",
+					strategyID, sc.Symbol, cleanupMsg, *side, fillQty))
+			}
+			return 1
+		}
+	}
+
 	// Place TP[n] reduce-only orders inline immediately after the fill so the
 	// position is fully protected before the next scheduler cycle.
 	// Note: if the strategy has no tiered close AND no ATR-based SL configured,
