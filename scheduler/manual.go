@@ -371,8 +371,15 @@ func runManualOpen(args []string) int {
 	// control trigger placement independently of the pct-based SL path).
 	var stopLossOID int64
 	var stopLossTriggerPx float64
+	slArmed := false
+	// OID from a partially-failed arm attempt that may still rest on HL; the
+	// abort branch must cancel it or it leaks into the open-order cap.
+	var lastPlacedOID int64
 
-	if !*recordOnly && (*slTriggerPx > 0 || (effectiveATRMult > 0 && entryATR > 0)) {
+	protectionRequested := *slTriggerPx > 0 || effectiveATRMult > 0
+	canComputeSL := *slTriggerPx > 0 || (effectiveATRMult > 0 && entryATR > 0)
+
+	if !*recordOnly && canComputeSL {
 		if *slTriggerPx > 0 {
 			stopLossTriggerPx = *slTriggerPx
 		} else if *side == "long" {
@@ -390,17 +397,53 @@ func runManualOpen(args []string) int {
 			var slResult *HyperliquidStopLossUpdateResult
 			var slStderr string
 			var slErr error
+			markAnchoredTried := false
 			for attempt := 1; attempt <= slMaxAttempts; attempt++ {
-				cancelOID := int64(0)
-				if attempt > 1 && stopLossOID > 0 {
-					cancelOID = stopLossOID
-				}
+				cancelOID := lastPlacedOID
 				slResult, slStderr, slErr = RunHyperliquidUpdateStopLoss(script, sc.Symbol, *side, fillQty, stopLossTriggerPx, cancelOID)
-				if slErr == nil && (slResult == nil || (slResult.Error == "" && slResult.StopLossError == "")) {
-					break // placed successfully
-				}
-				if slResult != nil && slResult.StopLossOID > 0 {
+				placedClean := slErr == nil &&
+					slResult != nil &&
+					slResult.Error == "" &&
+					slResult.StopLossError == "" &&
+					slResult.OpenOrderCheckError == "" &&
+					(slResult.StopLossOID > 0 || slResult.StopLossFilledImmediately)
+				if placedClean {
+					slArmed = true
 					stopLossOID = slResult.StopLossOID
+					if slResult.StopLossTriggerPx > 0 {
+						stopLossTriggerPx = slResult.StopLossTriggerPx
+					}
+					break
+				}
+				// Track OID only for cancel-on-retry. Never treat a failed attempt
+				// as armed — stale OID after cancel+failed-replace used to skip flatten.
+				if slResult != nil && slResult.StopLossOID > 0 {
+					lastPlacedOID = slResult.StopLossOID
+				} else if slResult != nil && slResult.CancelStopLossSucceeded {
+					lastPlacedOID = 0
+				}
+
+				errMsg := ""
+				if slErr != nil {
+					errMsg = slErr.Error()
+				} else if slResult != nil {
+					errMsg = slResult.StopLossError
+					if errMsg == "" {
+						errMsg = slResult.Error
+					}
+					if errMsg == "" {
+						errMsg = slResult.OpenOrderCheckError
+					}
+				}
+				// Entry-anchored trigger rejected by HL — recompute from fill price once.
+				if !markAnchoredTried && entryATR > 0 && effectiveATRMult > 0 && isHLInvalidTPSLPrice(errMsg) {
+					markAnchoredTried = true
+					if *side == "long" {
+						stopLossTriggerPx = resolvedFillPrice - effectiveATRMult*entryATR
+					} else {
+						stopLossTriggerPx = resolvedFillPrice + effectiveATRMult*entryATR
+					}
+					fmt.Fprintf(os.Stderr, "[manual-open] BadTriggerPx — retrying fill-anchored SL @ $%.4f\n", stopLossTriggerPx)
 				}
 				if attempt < slMaxAttempts {
 					fmt.Fprintf(os.Stderr, "[manual-open] SL arm attempt %d/%d failed — retrying in %v\n", attempt, slMaxAttempts, slRetryDelay)
@@ -410,40 +453,45 @@ func runManualOpen(args []string) int {
 			if slStderr != "" {
 				fmt.Fprintf(os.Stderr, "SL arm stderr: %s\n", slStderr)
 			}
-			if slErr != nil {
-				fmt.Fprintf(os.Stderr, "warning: SL placement failed: %v (position is open but unprotected)\n", slErr)
-			} else if slResult.Error != "" {
-				fmt.Fprintf(os.Stderr, "warning: SL arm error: %s (position is open but unprotected)\n", slResult.Error)
-			} else if slResult.StopLossError != "" {
-				// Non-fatal SDK error: stop_loss_error field (script exits 0 but SL was not placed)
-				fmt.Fprintf(os.Stderr, "warning: SL placement SDK error: %s (position is open but unprotected)\n", slResult.StopLossError)
+			if !slArmed {
+				stopLossOID = 0
+				if slErr != nil {
+					fmt.Fprintf(os.Stderr, "warning: SL placement failed: %v (position is open but unprotected)\n", slErr)
+				} else if slResult != nil && slResult.Error != "" {
+					fmt.Fprintf(os.Stderr, "warning: SL arm error: %s (position is open but unprotected)\n", slResult.Error)
+				} else if slResult != nil && slResult.StopLossError != "" {
+					fmt.Fprintf(os.Stderr, "warning: SL placement SDK error: %s (position is open but unprotected)\n", slResult.StopLossError)
+				} else if slResult != nil && slResult.OpenOrderCheckError != "" {
+					fmt.Fprintf(os.Stderr, "warning: SL open-order check failed: %s (position is open but unprotected)\n", slResult.OpenOrderCheckError)
+				} else {
+					fmt.Fprintf(os.Stderr, "warning: SL not confirmed resting after retries (position is open but unprotected)\n")
+				}
 			} else {
-				stopLossOID = slResult.StopLossOID
-				stopLossTriggerPx = slResult.StopLossTriggerPx
 				fmt.Printf("Stop-loss armed at $%.4f (OID=%d)\n", stopLossTriggerPx, stopLossOID)
 			}
 		}
 	}
 
 	// Agent HTTP path: never leave a naked position when SL was required but failed.
-	if *signalID != "" && !*recordOnly && stopLossOID == 0 {
-		protectionRequested := *slTriggerPx > 0 || effectiveATRMult > 0
-		attemptedSL := *slTriggerPx > 0 || (effectiveATRMult > 0 && entryATR > 0)
-		if protectionRequested && attemptedSL {
-			fmt.Fprintf(os.Stderr,
-				"error: stop-loss not armed after retries — flattening on-chain fill (signal_id=%s)\n",
-				*signalID)
+	// Flatten whenever protection was requested and SL is not confirmed armed —
+	// including the case where ATR-mult was requested but entryATR was zeroed
+	// (previously skipped via attemptedSL && entryATR>0).
+	if *signalID != "" && !*recordOnly && protectionRequested && !slArmed {
+		fmt.Fprintf(os.Stderr,
+			"error: stop-loss not armed after retries — flattening on-chain fill (signal_id=%s)\n",
+			*signalID)
+		warnNotifier(notifier, fmt.Sprintf(
+			"[manual-open] %s %s: SL not armed after retries (signal_id=%s) — aborting and cleaning up on-chain fill",
+			strategyID, sc.Symbol, *signalID))
+		// stopLossOID is zero here (never armed); cancel any stop left resting
+		// by a partially-failed attempt so it doesn't leak into the order cap.
+		cleanedUp, cleanupMsg := attemptManualOpenCleanup(sc.Symbol, fillQty, lastPlacedOID, nil)
+		if !cleanedUp {
 			warnNotifier(notifier, fmt.Sprintf(
-				"[manual-open] %s %s: SL not armed after retries (signal_id=%s) — aborting and cleaning up on-chain fill",
-				strategyID, sc.Symbol, *signalID))
-			cleanedUp, cleanupMsg := attemptManualOpenCleanup(sc.Symbol, fillQty, stopLossOID, nil)
-			if !cleanedUp {
-				warnNotifier(notifier, fmt.Sprintf(
-					"[manual-open] %s %s: SL-abort cleanup FAILED: %s — MANUAL INTERVENTION REQUIRED on HL UI (side=%s qty=%.6f)",
-					strategyID, sc.Symbol, cleanupMsg, *side, fillQty))
-			}
-			return 1
+				"[manual-open] %s %s: SL-abort cleanup FAILED: %s — MANUAL INTERVENTION REQUIRED on HL UI (side=%s qty=%.6f)",
+				strategyID, sc.Symbol, cleanupMsg, *side, fillQty))
 		}
+		return 1
 	}
 
 	// Place TP[n] reduce-only orders inline immediately after the fill so the

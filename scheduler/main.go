@@ -3291,6 +3291,15 @@ func isHLOpenOrderCapRejection(errStr string) bool {
 	return strings.Contains(lower, "trigger order") || strings.Contains(lower, "open order") || strings.Contains(lower, "open orders")
 }
 
+// isHLInvalidTPSLPrice detects HL rejecting a stop/TP trigger as too close to mark
+// or on the wrong side of price ("Invalid tp/sl price" / BadTriggerPx).
+func isHLInvalidTPSLPrice(errStr string) bool {
+	lower := strings.ToLower(errStr)
+	return strings.Contains(lower, "invalid tp/sl price") ||
+		strings.Contains(lower, "badtriggerpx") ||
+		strings.Contains(lower, "bad trigger")
+}
+
 func executeHyperliquidResult(sc StrategyConfig, s *StrategyState, result *HyperliquidResult, execResult *HyperliquidExecuteResult, signalStr string, price float64, regime *RegimeConfig, logger *StrategyLogger) (int, string) {
 	trades, detail, openTrade := executeHyperliquidResultDeferredOpen(sc, s, result, execResult, signalStr, price, regime, logger)
 	if openTrade != nil {
